@@ -26,7 +26,7 @@ tests_requirements = install_requirements + [
     ]
 
 setup(name='everest',
-      version='1.0b2',
+      version='thelma-16x',
       description='everest',
       long_description=README,
       classifiers=[
