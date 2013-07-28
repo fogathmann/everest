@@ -17,6 +17,7 @@ from everest.tests.complete_app.testing import create_collection
 from everest.tests.complete_app.testing import create_entity
 from pyramid.compat import urlparse
 
+
 __docformat__ = 'reStructuredText en'
 __all__ = ['RepoUrlTestCaseNoRdb',
            'RepoUrlTestCaseRdb',
@@ -228,11 +229,63 @@ class _UrlBaseTestCase(ResourceTestCase):
         coll_from_url = url_to_resource(self.base_url + '?q=%s' % criterion)
         self.assert_equal(len(coll_from_url), 1)
 
-    def test_url_to_resource_contained_with_collection_link(self):
-        url = self.app_url + '/my-entities/?q=parent:contained:"' \
-              + self.app_url + '/my-entity-parents/?q=id:less-than:3"'
+#    def test_url_to_resource_with_link_and_other(self):
+#        criterion1 = 'parent:equal-to:%s/my-entity-parents/0/' % self.app_url
+#        criterion2 = 'id:equal-to:0'
+#        coll_from_url = url_to_resource(self.base_url +
+#                                        '?q=%s~%s' % (criterion1, criterion2))
+#        self.assert_equal(len(coll_from_url), 1)
+
+    def test_url_to_resource_with_link_and_other(self):
+        criterion1 = 'parent:equal-to:"%s/my-entity-parents/0/"' % self.app_url
+        criterion2 = 'id:equal-to:0'
+        coll_from_url = url_to_resource(self.base_url +
+                                        '?q=%s~%s' % (criterion1, criterion2))
+        self.assert_equal(len(coll_from_url), 1)
+
+    def test_two_urls(self):
+        par_url = self.app_url + '/my-entity-parents/'
+        criteria = 'parent:equal-to:"%s","%s"' % (par_url + '0/', par_url + '1/')
+        url = self.base_url + '?q=%s' % criteria
         coll_from_url = url_to_resource(url)
         self.assert_equal(len(coll_from_url), 2)
+
+    def test_url_to_resource_contained_with_simple_collection_link(self):
+        nested_url = self.app_url \
+                     + '/my-entity-parents/?q=id:less-than:1'
+        url = self.app_url + '/my-entities/?q=parent:contained:' \
+              + '"' + nested_url + '"'
+        coll_from_url = url_to_resource(url)
+        self.assert_equal(len(coll_from_url), 1)
+
+    def test_url_to_resource_contained_with_complex_collection_link(self):
+        for op, crit, num in zip((' and ', '~'),
+                                 ('id:greater-than:0',
+                                  'text:not-equal-to:"foo0"'),
+                                 (1, 2)):
+            nested_url = self.app_url \
+                         + '/my-entity-parents/?q=id:less-than:2' \
+                         + op \
+                         + crit
+            url = self.app_url + '/my-entities/?q=parent:contained:' \
+                  + "'" + nested_url + "'"
+            coll_from_url = url_to_resource(url)
+            self.assert_equal(len(coll_from_url), num)
+
+    def test_url_to_resource_contained_with_grouped_collection_link(self):
+        url = self.app_url + '/my-entities/' \
+              + '?q=(parent:contained:"' \
+              + self.app_url \
+              + '/my-entity-parents/?q=id:less-than:3") ' \
+              + 'and text:not-equal-to:"foo0"'
+        coll_from_url = url_to_resource(url)
+        self.assert_equal(len(coll_from_url), 1)
+
+    def test_nested_member_url_with_query_string_fail(self):
+        par_url = self.app_url + '/my-entity-parents/1/'
+        criteria = 'parent:equal-to:%s?q=id:equal-to:0' % par_url
+        url = self.base_url + '?q=%s' % criteria
+        self.assert_raises(ValueError, url_to_resource, url)
 
     def __check_url(self, url,
                     schema=None, path=None, params=None, query=None):
