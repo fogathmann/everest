@@ -27,10 +27,10 @@ from everest.querying.specifications import le
 from everest.querying.specifications import lt
 from everest.querying.specifications import rng
 from everest.querying.specifications import starts
+from everest.resources.interfaces import ICollectionResource
 from everest.resources.utils import url_to_resource
 from iso8601.iso8601 import parse_date
 from pyparsing import CaselessKeyword
-from pyparsing import CharsNotIn
 from pyparsing import Combine
 from pyparsing import Empty
 from pyparsing import Forward
@@ -48,8 +48,8 @@ from pyparsing import delimitedList
 from pyparsing import nums
 from pyparsing import opAssoc
 from pyparsing import operatorPrecedence
-from pyparsing import removeQuotes
 from pyparsing import replaceWith
+from pyparsing import sglQuotedString
 from pyparsing import srange
 from pyramid.compat import string_types
 
@@ -132,21 +132,49 @@ class CriterionConverter(object):
     @classmethod
     def convert(cls, toks):
         crit = toks[0]
+        # Extract attribute name.
+        attr_name = cls.__prepare_identifier(crit.name)
+        # Extract operator name.
         op_name = cls.__prepare_identifier(crit.operator)
         if op_name.startswith("not_"):
             op_name = op_name[4:]
             negate = True
         else:
             negate = False
-        attr_name = cls.__prepare_identifier(crit.name)
-        attr_values = cls.__prepare_values(crit.value)
-        if attr_values == []:
+        # Extract attribute value.
+        if len(crit.value) == 0:
             raise ValueError('Criterion does not define a value.')
-        # For the CONTAINED spec, we treat all parsed values as one value.
-        if op_name == CONTAINED.name:
-            attr_values = [attr_values]
+#        elif len(crit.value) == 1 and isinstance(crit.value, ParseResults):
+#            # URLs - convert to resource.
+#            url_val = crit.value
+#            try:
+#                rc = url_to_resource(url_val.resource)
+#            except:
+#                raise ValueError('Could not convert "%s" to a resource.'
+#                                 % url_val.resource)
+#            if not url_val.query == '':
+#                if not ICollectionResource.providedBy(rc): # pylint: disable=E1101
+#                    raise ValueError('Member resources can not have a '
+#                                     'query string.')
+#                rc.filter = url_val.query
+#            attr_value = rc
+#            value_is_resource = True
+        elif len(crit.value) == 1 \
+             and ICollectionResource.providedBy(crit.value[0]): # pylint: disable=E1101
+            attr_value = crit.value[0]
+            value_is_resource = True
+        else:
+            attr_value = cls.__prepare_values(crit.value)
+            value_is_resource = False
         spec_gen = cls.spec_map[op_name]
-        return cls.__make_spec(spec_gen, attr_name, attr_values, negate)
+        if op_name == CONTAINED.name or value_is_resource:
+            spec = spec_gen(**{attr_name:attr_value})
+            if negate:
+                spec = ~spec
+        else:
+            # Create a spec for each value and concatenate with OR.
+            spec = cls.__make_spec(spec_gen, attr_name, attr_value, negate)
+        return spec
 
     @classmethod
     def __make_spec(cls, spec_gen, attr_name, attr_values, negate):
@@ -169,22 +197,13 @@ class CriterionConverter(object):
     def __prepare_values(cls, values):
         prepared = []
         for val in values:
-            if cls.__is_empty_string(val):
-                continue
-            elif cls.__is_url(val):
-                # URLs - convert to resource.
-                val = url_to_resource(''.join(val))
-            if not val in prepared:
+            if not cls.__is_empty_string(val) and not val in prepared:
                 prepared.append(val)
         return prepared
 
     @classmethod
     def __is_empty_string(cls, v):
         return isinstance(v, string_types) and len(v) == 0
-
-    @classmethod
-    def __is_url(cls, v):
-        return isinstance(v, string_types) and v.startswith('http://')
 
 
 def convert_conjunction(toks):
@@ -209,6 +228,16 @@ def convert_simple_criteria(toks):
     return spec
 
 
+
+def convert_string(toks):
+    unquoted = toks[0][1:-1]
+    if len(url_protocol.searchString(unquoted)) > 0:
+        result = [url_to_resource(unquoted)]
+    else:
+        result = [unquoted]
+    return result
+
+
 # Numbers are converted to ints if possible.
 cql_number = Combine(Optional('-') + ('0' | Word(nonzero_nums, nums)) +
                      Optional('.' + Word(nums)) +
@@ -221,31 +250,26 @@ cql_date = Combine(dbl_quote.suppress() + Regex(ISO8601_REGEX) +
                    ).setParseAction(convert_date)
 # All double-quoted strings that are not dates are returned with their quotes
 # removed.
-cql_string = dblQuotedString.setParseAction(removeQuotes)
+cql_string = (dblQuotedString | sglQuotedString).setParseAction(convert_string)
 
-# URLs
-protocol = Literal('http')
-domain = Combine(OneOrMore(CharsNotIn('/')))
-path = Combine(slash + OneOrMore(CharsNotIn('~')))
-cql_url = Combine(protocol + '://' + domain + path)
+# URLs are detected as strings starting with the http(s) protocol.
+url_protocol = Combine(Literal('http') + Optional('s'))
 
 # Number range.
 # FIXME: char ranges are not supported yet
 cql_number_range = Group(cql_number + '-' + cql_number
                            ).setParseAction(convert_range)
 
-cql_values = Group(
-    delimitedList(
-        cql_number_range('range') |
-        cql_number('number') |
-        cql_date('date') |
-        cql_string('string') |
-        cql_url('url') |
-        true |
-        false |
-        empty
-        )
-    )
+cql_values = Group(delimitedList(
+                        cql_number_range('range') |
+                        cql_number('number') |
+                        cql_date('date') |
+                        cql_string('string') |
+                        true |
+                        false |
+                        empty
+                        )
+                   )
 
 logical_op = and_op('operator') | or_op('operator')
 
@@ -271,7 +295,7 @@ simple_criteria = Group(criterion +
                         OneOrMore(tilde.suppress() + criterion))
 simple_criteria.setParseAction(convert_simple_criteria)
 
-query = simple_criteria | junctions
+query = (simple_criteria | junctions) # pylint: disable=W0104
 
 
 def parse_filter(query_string):
