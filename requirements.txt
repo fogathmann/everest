@@ -6,5 +6,7 @@ pyramid>=1.4.2
 pyramid_tm>=0.7
 pyramid_zcml>=1.0.0
 python-graph-core
-sqlalchemy<=0.7.99
+sqlalchemy>=0.8.2
 zope.sqlalchemy>=0.7.2
+PasteScript
+weberror
