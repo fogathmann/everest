@@ -8,3 +8,4 @@ pyramid_zcml>=1.0.0
 python-graph-core
 sqlalchemy>=0.8.2
 zope.sqlalchemy>=0.7.2
+PasteScript
