@@ -1,17 +1,16 @@
 """
+The repository manager class.
 
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Jan 25, 2013.
 """
 from everest.repositories.constants import REPOSITORY_DOMAINS
-from everest.repositories.constants import REPOSITORY_TYPES
-from everest.repositories.filesystem.repository import FileSystemRepository
-from everest.repositories.memory.repository import MemoryRepository
-from everest.repositories.rdb.repository import RdbRepository
+from everest.repositories.interfaces import IRepository
 from everest.utils import id_generator
 from pyramid.compat import itervalues_
+from pyramid.threadlocal import get_current_registry
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['RepositoryManager',
@@ -20,7 +19,7 @@ __all__ = ['RepositoryManager',
 
 class RepositoryManager(object):
     """
-    The repository manager creates, initializes and holds repositories by 
+    The repository manager creates, initializes and holds repositories by
     name.
     """
     __repo_id_gen = id_generator()
@@ -30,9 +29,15 @@ class RepositoryManager(object):
         self.__default_repo = None
 
     def get(self, name):
+        """
+        Returns the specified repository.
+        """
         return self.__repositories.get(name)
 
     def set(self, repo):
+        """
+        Sets the given repository (by name).
+        """
         name = repo.name
         if name in self.__repositories \
            and self.__repositories[name].is_initialized:
@@ -41,11 +46,20 @@ class RepositoryManager(object):
         self.__repositories[name] = repo
 
     def get_default(self):
+        """
+        Returns the default repository.
+        """
         return self.__default_repo
 
     def new(self, repo_type, name=None, make_default=False,
             repository_class=None, aggregate_class=None,
             configuration=None):
+        """
+        Creates a new repository of the given type. If the root repository
+        domain (see :class:`everest.repositories.constants.REPOSITORY_DOMAINS`)
+        is passed as a repository name, the type string is used as the name;
+        if no name is passed, a unique name is created automatically.
+        """
         if name == REPOSITORY_DOMAINS.ROOT:
             # Unless explicitly configured differently, all root repositories
             # join the transaction.
@@ -59,17 +73,11 @@ class RepositoryManager(object):
             # The system repository is special in that its repository
             # should not join the transaction but still commit all changes.
             autocommit = name == REPOSITORY_DOMAINS.SYSTEM
-        if repo_type == REPOSITORY_TYPES.MEMORY:
+        if repository_class is None:
+            reg = get_current_registry()
+            repository_class = reg.queryUtility(IRepository, name=repo_type)
             if repository_class is None:
-                repository_class = MemoryRepository
-        elif repo_type == REPOSITORY_TYPES.RDB:
-            if repository_class is None:
-                repository_class = RdbRepository
-        elif repo_type == REPOSITORY_TYPES.FILE_SYSTEM:
-            if repository_class is None:
-                repository_class = FileSystemRepository
-        else:
-            raise ValueError('Unknown repository type.')
+                raise ValueError('Unknown repository type "%s".' % repo_type)
         repo = repository_class(name,
                                 aggregate_class,
                                 join_transaction=join_transaction,
@@ -80,14 +88,17 @@ class RepositoryManager(object):
             self.__default_repo = repo
         return repo
 
-    def setup_system_repository(self, repository_type, reset_on_start):
+    def setup_system_repository(self, repository_type, reset_on_start,
+                                repository_class=None):
         """
         Sets up the system repository with the given repository type.
-        
-        :param str repository: Repository type to use for the SYSTEM 
+
+        :param str repository_type: Repository type to use for the SYSTEM
           repository.
         :param bool reset_on_start: Flag to indicate whether stored system
           resources should be discarded on startup.
+        :param repository_class: class to use for the system repository. If
+          not given, the registered class for the given type will be used.
         """
         # Set up the system entity repository (this does not join the
         # transaction and is in autocommit mode).
@@ -95,6 +106,7 @@ class RepositoryManager(object):
                    messaging_reset_on_start=reset_on_start)
         system_repo = self.new(repository_type,
                                name=REPOSITORY_DOMAINS.SYSTEM,
+                               repository_class=repository_class,
                                configuration=cnf)
         self.set(system_repo)
 
@@ -108,4 +120,8 @@ class RepositoryManager(object):
                 repo.initialize()
 
     def on_app_created(self, event): # pylint: disable=W0613
+        """
+        Callback set up by the registry configurator to initialize all
+        registered repositories.
+        """
         self.initialize_all()

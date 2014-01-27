@@ -10,10 +10,21 @@ from zope.interface import Attribute # pylint: disable=E0611,F0401
 from zope.interface import Interface # pylint: disable=E0611,F0401
 
 __docformat__ = 'reStructuredText en'
-__all__ = ['IDeSerializer',
-           'ISerializer',
+__all__ = ['ICollectionDataElement',
+           'ICollectionResourceRepresenter',
+           'IDataElement',
+           'IDeSerializer',
+           'ILinkedDataElement',
+           'IMappedClass',
+           'IMappingRegistry',
+           'IMemberDataElement',
+           'IMemberResourceRepresenter',
            'IRepresentationConverter',
-           'IRepresenter'
+           'IRepresenter',
+           'IRepresenterRegistry',
+           'IResourceDataElement',
+           'IResourceRepresenter',
+           'ISerializer',
            ]
 
 # interfaces do not provide a constructor. pylint: disable=W0232
@@ -87,7 +98,9 @@ class ICollectionResourceRepresenter(IResourceRepresenter):
 
 
 class IMappedClass(Interface):
-
+    """
+    Interface for classes with mapped attributes.
+    """
     def create_from_data(data_element):
         """
         Creates an instance from the given data element.
@@ -96,7 +109,7 @@ class IMappedClass(Interface):
 
 class IDataElement(Interface):
     """
-    Base interface for data element classes.
+    Base interface for data elements.
     """
     #: Mapping responsible for class -> attribute mapping
     mapping = Attribute("Maps classes to attributes")
@@ -108,6 +121,9 @@ class IDataElement(Interface):
 
 
 class IResourceDataElement(IDataElement):
+    """
+    Interface for resource data elements.
+    """
     def create_from_resource(resource):
         """
         Factory class method creating a new data element from the given
@@ -119,9 +135,11 @@ class IMemberDataElement(IResourceDataElement):
     """
     Interface for member data elements.
     """
-
     converter_registry = Attribute("Registry of representation<->value "
                                    "converters.")
+
+    data = Attribute("Ordered dictionary mapping data attribute names to "
+                     "data attribute values.")
 
     def get_mapped_terminal(attr):
         """
@@ -141,7 +159,7 @@ class IMemberDataElement(IResourceDataElement):
 
     def set_mapped_child(attr, data_element):
         """
-        Sets the given mmeber or collection mapped attribute to the given 
+        Sets the given mmeber or collection mapped attribute to the given
         data element.
         """
 
@@ -150,7 +168,6 @@ class ICollectionDataElement(IResourceDataElement):
     """
     Interface for collection data elements.
     """
-
     def get_members():
         """
         Returns all member data elements.
@@ -172,21 +189,30 @@ class ILinkedDataElement(IDataElement):
     """
     Interface for data elements containing a link to a resource.
     """
-
     def get_url():
         """
         Returns the URL for this data element.
         """
 
-
-class ICustomDataElement(Interface):
-
-    def extract():
+    def get_kind():
         """
+        Returns the kind of the resource being linked to (one of the
+        constants declared in :class:`everest.constants.RESOURCE_KINDS`).
         """
 
-    def inject(obj):
+    def get_id():
         """
+        Returns the ID of the resource being linked to.
+        """
+
+    def get_relation():
+        """
+        Returns the relation of the resource being linked to.
+        """
+
+    def get_title():
+        """
+        Returns a title for the resource being linked to.
         """
 
 

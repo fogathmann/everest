@@ -1,16 +1,18 @@
 """
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Jun 7, 2012.
 """
 from collections import OrderedDict
+from everest.constants import RESOURCE_KINDS
 from everest.representers.attributes import MappedAttribute
 from everest.representers.csv import CsvLinkedDataElement
 from everest.representers.dataelements import DataElementAttributeProxy
 from everest.representers.dataelements import SimpleCollectionDataElement
+from everest.representers.dataelements import SimpleLinkedDataElement
 from everest.representers.dataelements import SimpleMemberDataElement
-from everest.resources.kinds import ResourceKinds
+from everest.resources.attributes import get_resource_class_attribute
 from everest.testing import ResourceTestCase
 from everest.tests.complete_app.resources import MyEntityMember
 from everest.tests.complete_app.testing import create_collection
@@ -29,22 +31,24 @@ class DataElementsTestCase(ResourceTestCase):
     def test_member_data_element(self):
         data_el = SimpleMemberDataElement.create()
         # Test nesteds.
-        self.assert_equal(data_el.nesteds.keys(), [])
+        self.assert_equal(list(data_el.nesteds.keys()), [])
         parent_data_el = SimpleMemberDataElement.create()
-        rc_nested_attr = MyEntityMember.get_attributes()['parent']
+        rc_nested_attr = \
+            get_resource_class_attribute(MyEntityMember, 'parent')
         mp_nested_attr = MappedAttribute(rc_nested_attr)
         data_el.set_nested(mp_nested_attr, parent_data_el)
         self.assert_true(data_el.get_nested(mp_nested_attr) is parent_data_el)
-        self.assert_equal(data_el.nesteds.keys(), ['parent'])
+        self.assert_equal(list(data_el.nesteds.keys()), ['parent'])
         # Test terminals.
-        self.assert_equal(data_el.terminals.keys(), [])
+        self.assert_equal(list(data_el.terminals.keys()), [])
         utc = timezone('UTC')
         ldt = datetime.datetime(2012, 8, 29, 16, 20, 0, tzinfo=utc)
         term_attr_data = OrderedDict(text='foo',
                                      number=0,
                                      date_time=ldt)
         for term_attr_name, term_attr_value in term_attr_data.items():
-            rc_attr = MyEntityMember.get_attributes()[term_attr_name]
+            rc_attr = get_resource_class_attribute(MyEntityMember,
+                                                   term_attr_name)
             mp_attr = MappedAttribute(rc_attr)
             # Check setting to None value.
             data_el.set_terminal(mp_attr, None)
@@ -57,7 +61,8 @@ class DataElementsTestCase(ResourceTestCase):
             rpr_val = data_el.get_terminal_converted(mp_attr)
             data_el.set_terminal_converted(mp_attr, rpr_val)
             self.assert_equal(data_el.get_terminal(mp_attr), term_attr_value)
-        self.assert_equal(data_el.terminals.keys(), term_attr_data.keys())
+        self.assert_equal(list(data_el.terminals.keys()),
+                          list(term_attr_data.keys()))
         # Printing.
         prt_str = str(data_el)
         self.assert_true(prt_str.startswith(data_el.__class__.__name__))
@@ -65,8 +70,8 @@ class DataElementsTestCase(ResourceTestCase):
 
     def test_printing_with_none_value(self):
         data_el = SimpleMemberDataElement.create()
-        self.assert_equal(data_el.terminals.keys(), [])
-        rc_attr = MyEntityMember.get_attributes()['text']
+        self.assert_equal(list(data_el.terminals.keys()), [])
+        rc_attr = get_resource_class_attribute(MyEntityMember, 'text')
         mp_attr = MappedAttribute(rc_attr)
         data_el.set_terminal(mp_attr, None) # Need one None attr value.
         prt_str = str(data_el)
@@ -86,7 +91,7 @@ class DataElementsTestCase(ResourceTestCase):
         self.assert_true(prt_str.startswith(coll_data_el.__class__.__name__))
         self.assert_true(prt_str.endswith(']'))
 
-    def test_linked_data_element(self):
+    def test_linked_collection_data_element(self):
         rc = create_collection()
         self.assert_raises(ValueError,
                            CsvLinkedDataElement.create_from_resource,
@@ -94,10 +99,16 @@ class DataElementsTestCase(ResourceTestCase):
         data_el = CsvLinkedDataElement.create_from_resource(rc)
         self.assert_equal(data_el.get_title(), 'Collection of MyEntityMember')
         self.assert_not_equal(data_el.get_url().find('/my-entities/'), -1)
-        self.assert_equal(data_el.get_kind(), ResourceKinds.COLLECTION)
+        self.assert_equal(data_el.get_kind(), RESOURCE_KINDS.COLLECTION)
         self.assert_equal(data_el.get_relation(),
                           'http://test.org/myentity-collection')
         # Can not use data element attribute proxy with a link.
         self.assert_raises(ValueError, DataElementAttributeProxy, data_el)
         self.assert_true(str(data_el).startswith(data_el.__class__.__name__))
 
+    def test_linked_member_data_element(self):
+        mb_data_el = SimpleLinkedDataElement.create('http://dummy',
+                                                    RESOURCE_KINDS.MEMBER,
+                                                    id=0)
+        self.assert_equal(mb_data_el.get_kind(), RESOURCE_KINDS.MEMBER)
+        self.assert_equal(mb_data_el.get_id(), 0)

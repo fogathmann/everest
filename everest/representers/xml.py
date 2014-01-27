@@ -6,6 +6,17 @@ See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on May 19, 2011.
 """
+from collections import OrderedDict
+import datetime
+
+from lxml import etree
+from lxml import objectify
+from pkg_resources import resource_filename # pylint: disable=E0611
+from pyramid.compat import bytes_
+from pyramid.compat import text_type
+
+from everest.constants import RESOURCE_ATTRIBUTE_KINDS
+from everest.constants import RESOURCE_KINDS
 from everest.mime import XmlMime
 from everest.representers.base import MappingResourceRepresenter
 from everest.representers.base import RepresentationGenerator
@@ -17,21 +28,17 @@ from everest.representers.converters import DateTimeConverter
 from everest.representers.dataelements import CollectionDataElement
 from everest.representers.dataelements import LinkedDataElement
 from everest.representers.dataelements import MemberDataElement
+from everest.representers.interfaces import IDataElement
 from everest.representers.interfaces import ILinkedDataElement
 from everest.representers.mapping import MappingRegistry
 from everest.representers.utils import get_mapping_registry
-from everest.resources.attributes import ResourceAttributeKinds
-from everest.resources.kinds import ResourceKinds
 from everest.resources.link import Link
 from everest.resources.utils import get_collection_class
 from everest.resources.utils import get_member_class
 from everest.resources.utils import provides_member_resource
 from everest.resources.utils import resource_to_url
-from lxml import etree
-from lxml import objectify
-from pkg_resources import resource_filename # pylint: disable=E0611
 from zope.interface import providedBy as provided_by # pylint: disable=E0611,F0401
-import datetime
+
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['XmlCollectionDataElement',
@@ -54,6 +61,7 @@ XML_TAG_OPTION = 'xml_tag'
 XML_SCHEMA_OPTION = 'xml_schema'
 XML_NAMESPACE_OPTION = 'xml_ns'
 XML_PREFIX_OPTION = 'xml_prefix'
+XML_VALIDATE_OPTION = 'xml_validate'
 
 NAMESPACE_MAPPING_OPTION = 'namespace'
 
@@ -66,7 +74,6 @@ XmlConverterRegistry.register(bool, BooleanConverter)
 
 
 class XmlRepresentationParser(RepresentationParser):
-
     def run(self):
         # Create an XML schema.
         schema_loc = self.get_option('schema_location')
@@ -74,8 +81,10 @@ class XmlRepresentationParser(RepresentationParser):
         try:
             tree = objectify.parse(self._stream, parser)
         except etree.XMLSyntaxError as err:
-            raise SyntaxError('Could not parse XML document for schema %s.'
-                              '\n%s' % (schema_loc, err.msg))
+            msg = 'Could not parse XML document'
+            if not schema_loc is None:
+                msg += ' for schema %s.' % schema_loc
+            raise SyntaxError('%s\n%s' % (msg, err.msg))
         return tree.getroot()[0]
 
 
@@ -83,11 +92,10 @@ class XmlRepresentationGenerator(RepresentationGenerator):
     def run(self, data_element):
         objectify.deannotate(data_element)
         etree.cleanup_namespaces(data_element)
-        encoding = self.get_option('encoding')
-        self._stream.write(etree.tostring(data_element,
-                                          pretty_print=True,
-                                          encoding=encoding,
-                                          xml_declaration=True))
+        rpr_text = etree.tostring(data_element,
+                                  pretty_print=True,
+                                  encoding=text_type)
+        self._stream.write(rpr_text)
 
 
 class XmlParserFactory(object):
@@ -121,11 +129,27 @@ class XmlParserFactory(object):
 
 
 class XmlResourceRepresenter(MappingResourceRepresenter):
-
     content_type = XmlMime
 
-    #: The encoding to use for reading and writing XML.
-    ENCODING = 'utf-8'
+    __tmpl = "<?xml version='1.0' encoding='%s' ?>%s"
+
+    def to_bytes(self, obj, encoding=None):
+        """
+        Overwritten so we can insert the `?xml` processing directive.
+        """
+        if encoding is None:
+            encoding = self.encoding
+        text = self.__tmpl % (encoding, self.to_string(obj))
+        return bytes_(text, encoding=encoding)
+
+    def bytes_from_data(self, data_element, encoding=None):
+        """
+        Overwritten so we can insert the `?xml` processing directive.
+        """
+        if encoding is None:
+            encoding = self.encoding
+        text = self.__tmpl % (encoding, self.string_from_data(data_element))
+        return bytes_(text, encoding=encoding)
 
     @classmethod
     def make_mapping_registry(cls):
@@ -134,14 +158,16 @@ class XmlResourceRepresenter(MappingResourceRepresenter):
     def _make_representation_parser(self, stream, resource_class, mapping):
         parser = XmlRepresentationParser(stream, resource_class, mapping)
         mp = self._mapping
-        xml_schema = mp.configuration.get_option(XML_SCHEMA_OPTION)
+        do_validate = mp.configuration.get_option(XML_VALIDATE_OPTION)
+        if do_validate:
+            xml_schema = mp.configuration.get_option(XML_SCHEMA_OPTION)
+        else:
+            xml_schema = None
         parser.set_option('schema_location', xml_schema)
         return parser
 
     def _make_representation_generator(self, stream, resource_class, mapping):
-        generator = XmlRepresentationGenerator(stream, resource_class, mapping)
-        generator.set_option('encoding', self.ENCODING)
-        return generator
+        return XmlRepresentationGenerator(stream, resource_class, mapping)
 
 
 class _XmlDataElementMixin(object):
@@ -195,15 +221,7 @@ class XmlMemberDataElement(objectify.ObjectifiedElement,
                 # This should never happen.
                 raise ValueError('More than one child for member '
                                  'attribute "%s" found.' % attr) # pragma: no cover
-            # Link handling: look for wrapper tag with *one* link child.
-            if child.countchildren() == 1:
-                grand_child = child.getchildren()[0]
-                if ILinkedDataElement in provided_by(grand_child):
-                    # We inject the id attribute from the wrapper element.
-                    str_xml = child.get('id')
-                    if not str_xml is None:
-                        grand_child.set('id', str_xml)
-                    child = grand_child
+            child = self.__check_for_link(child)
         return child
 
     def set_nested(self, attr, data_element):
@@ -248,27 +266,35 @@ class XmlMemberDataElement(objectify.ObjectifiedElement,
 
     @property
     def data(self):
-        data_map = {}
+        data_map = OrderedDict()
         for child in self.iterchildren():
             idx = child.tag.find('}')
             if idx != -1:
                 tag = child.tag[idx + 1:]
             else:
                 tag = child.tag
-            data_map[tag] = child.text
+            if IDataElement.providedBy(child): # pylint:disable=E1101
+                value = self.__check_for_link(child)
+            else:
+                attr = self.mapping.get_attribute(tag)
+                value = XmlConverterRegistry.convert_from_representation(
+                                                            child.text,
+                                                            attr.value_type)
+            data_map[tag] = value
         return data_map
 
     def __get_q_tag(self, attr):
+        # FIXME: We should cache the namespace for each attribute.
         if not attr.namespace is None:
             q_tag = '{%s}%s' % (attr.namespace, attr.repr_name)
         else:
-            if attr.kind == ResourceAttributeKinds.TERMINAL:
+            if attr.kind == RESOURCE_ATTRIBUTE_KINDS.TERMINAL:
                 xml_ns = \
                   self.mapping.configuration.get_option(XML_NAMESPACE_OPTION)
             else:
-                if attr.kind == ResourceAttributeKinds.MEMBER:
+                if attr.kind == RESOURCE_ATTRIBUTE_KINDS.MEMBER:
                     attr_type = get_member_class(attr.value_type)
-                elif attr.kind == ResourceAttributeKinds.COLLECTION:
+                elif attr.kind == RESOURCE_ATTRIBUTE_KINDS.COLLECTION:
                     attr_type = get_collection_class(attr.value_type)
                 mp = self.mapping.mapping_registry.find_mapping(attr_type)
                 if not mp is None:
@@ -282,6 +308,18 @@ class XmlMemberDataElement(objectify.ObjectifiedElement,
             else:
                 q_tag = attr.repr_name
         return q_tag
+
+    def __check_for_link(self, child):
+        # Link handling: look for wrapper tag with *one* link child.
+        if child.countchildren() == 1:
+            grand_child = child.getchildren()[0]
+            if ILinkedDataElement in provided_by(grand_child):
+#                # We inject the id attribute from the wrapper element.
+#                str_xml = child.get('id')
+#                if not str_xml is None:
+#                    grand_child.set('id', str_xml)
+                child = grand_child
+        return child
 
 
 class XmlCollectionDataElement(objectify.ObjectifiedElement,
@@ -297,9 +335,9 @@ class XmlCollectionDataElement(objectify.ObjectifiedElement,
 
 
 class XmlLinkedDataElement(objectify.ObjectifiedElement, LinkedDataElement):
-
     @classmethod
-    def create(cls, url, kind, relation=None, title=None, **options):
+    def create(cls, url, kind,
+               id=None, relation=None, title=None, **options): # pylint: disable=W0622
 #        mp_reg = get_mapping_registry(XmlMime)
 #        ns_map = mp_reg.namespace_map
         xml_ns = options[XML_NAMESPACE_OPTION]
@@ -308,6 +346,8 @@ class XmlLinkedDataElement(objectify.ObjectifiedElement, LinkedDataElement):
         link_el = el_fac(tag)
         link_el.set('href', url)
         link_el.set('kind', kind)
+        if not id is None:
+            link_el.set('id', id)
         if not relation is None:
             link_el.set('rel', relation)
         if not title is None:
@@ -324,7 +364,8 @@ class XmlLinkedDataElement(objectify.ObjectifiedElement, LinkedDataElement):
         rc_data_el = mp.create_data_element_from_resource(resource)
         if provides_member_resource(resource):
             link_el = cls.create(resource_to_url(resource),
-                                 ResourceKinds.MEMBER,
+                                 RESOURCE_KINDS.MEMBER,
+                                 id=str(resource.id),
                                  relation=resource.relation,
                                  title=resource.title,
                                  **options)
@@ -334,7 +375,7 @@ class XmlLinkedDataElement(objectify.ObjectifiedElement, LinkedDataElement):
             # Collection links only get an actual link element if they
             # contain any members.
             link_el = cls.create(resource_to_url(resource),
-                                 ResourceKinds.COLLECTION,
+                                 RESOURCE_KINDS.COLLECTION,
                                  relation=resource.relation,
                                  title=resource.title,
                                  **options)
@@ -354,7 +395,16 @@ class XmlLinkedDataElement(objectify.ObjectifiedElement, LinkedDataElement):
         return self.get('title')
 
     def get_id(self):
-        return self.get('id')
+        # FIXME: This will not work with ID strings that happen to be
+        #        convertible to an int.
+        id_str = self.get('id')
+        try:
+            id_val = int(id_str)
+        except ValueError:
+            id_val = id_str
+        except TypeError: # Happens if the id string is None.
+            id_val = id_str
+        return id_val
 
 
 class XmlRepresenterConfiguration(RepresenterConfiguration):
@@ -370,12 +420,17 @@ class XmlRepresenterConfiguration(RepresenterConfiguration):
     xml_ns :
         The XML namespace to use for the represented data element class.
     xml_prefix :
-        The XML namespace prefix to use for the represented data element class.
+        The XML namespace prefix to use for the represented data element
+        class.
+    xml_validate:
+        Boolean flag indicating if incoming representations should be
+        validated upon parsing (defaults to `True`).
     """
     _default_config_options = \
         dict(list(RepresenterConfiguration._default_config_options.items())
              + [(XML_TAG_OPTION, None), (XML_SCHEMA_OPTION, None),
-                (XML_NAMESPACE_OPTION, None), (XML_PREFIX_OPTION, None)])
+                (XML_NAMESPACE_OPTION, None), (XML_PREFIX_OPTION, None),
+                (XML_VALIDATE_OPTION, True)])
     _default_attributes_options = \
         dict(list(RepresenterConfiguration._default_attributes_options.items())
              + [(NAMESPACE_MAPPING_OPTION, None)])
@@ -441,7 +496,7 @@ class XmlMappingRegistry(MappingRegistry):
             if issubclass(de_cls, XmlLinkedDataElement):
                 continue
             xml_ns = mapping.configuration.get_option(XML_NAMESPACE_OPTION)
-            xml_tag = mapping.configuration.get_option(XML_TAG_OPTION)
+            xml_tag = bytes_(mapping.configuration.get_option(XML_TAG_OPTION))
             ns_cls_map = lookup.get_namespace(xml_ns)
             if xml_tag in ns_cls_map:
                 raise ValueError('Duplicate tag "%s" in namespace "%s" '

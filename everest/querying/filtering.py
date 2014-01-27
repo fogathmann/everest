@@ -1,7 +1,7 @@
 """
-Filter specification builder, visitor, director classes.
+Filter specification visitors.
 
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Jul 5, 2011.
@@ -29,18 +29,17 @@ from pyramid.compat import string_types
 from zope.interface import implementer # pylint: disable=E0611,F0401
 
 __docformat__ = 'reStructuredText en'
-__all__ = ['CqlFilterSpecificationVisitor',
+__all__ = ['CqlFilterExpression',
+           'CqlFilterSpecificationVisitor',
            'FilterSpecificationVisitor',
+           'RepositoryFilterSpecificationVisitor',
            ]
 
 
 class FilterSpecificationVisitor(SpecificationVisitor):
     """
-    Base class for filter specification visitors.
+    Abstract base class for filter specification visitors.
     """
-
-    def __init__(self):
-        SpecificationVisitor.__init__(self)
 
     def _disjunction_op(self, spec, *expressions):
         raise NotImplementedError('Abstract method.')
@@ -94,6 +93,7 @@ class CqlFilterExpression(CqlExpression):
         self.value = value
 
     def _as_string(self):
+        #: Returns this CQL expression as a string.
         return self.__cql_format % dict(attr=self.attr_name,
                                         op=slug_from_identifier(self.op_name),
                                         val=self.value)
@@ -206,7 +206,24 @@ class CqlFilterSpecificationVisitor(FilterSpecificationVisitor):
         if isinstance(value, string_types):
             result = '"%s"' % value
         elif IResource.providedBy(value): # pylint: disable=E1101
-            result = resource_to_url(value)
+            result = "'%s'" % resource_to_url(value)
         else:
             result = str(value)
         return result
+
+
+class RepositoryFilterSpecificationVisitor(FilterSpecificationVisitor): # pylint: disable=W0223
+    """
+    Specification visitors that build filter expressions for a repository
+    backend.
+    """
+    def __init__(self, entity_class):
+        FilterSpecificationVisitor.__init__(self)
+        self._entity_class = entity_class
+
+    def filter_query(self, query):
+        """
+        Returns the given query filtered by this visitor's filter expression.
+        """
+        return query.filter(self.expression)
+

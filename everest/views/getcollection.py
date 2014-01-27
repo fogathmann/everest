@@ -1,7 +1,7 @@
 """
 Get collection view.
 
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Oct 7, 2011.
@@ -21,6 +21,8 @@ __all__ = ['GetCollectionView',
 class GetCollectionView(GetResourceView):
     """
     View for GET requests on collection resources.
+
+    If the request is sucessful, the server responds with status HTTP OK.
     """
     def _prepare_resource(self):
         try:

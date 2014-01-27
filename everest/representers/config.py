@@ -1,7 +1,7 @@
 """
 Representer configuration.
 
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on May 8, 2012.
@@ -16,9 +16,7 @@ __all__ = ['RepresenterConfiguration',
 # Configuration option name declarations.
 
 _ATTRIBUTES_CONFIG_OPTION = 'attributes'
-IGNORE_OPTION = 'ignore' # deprecated
-IGNORE_ON_READ_OPTION = 'ignore_on_read'
-IGNORE_ON_WRITE_OPTION = 'ignore_on_write'
+IGNORE_OPTION = 'ignore'
 WRITE_AS_LINK_OPTION = 'write_as_link'
 WRITE_MEMBERS_AS_LINK_OPTION = 'write_members_as_link'
 REPR_NAME_OPTION = 'repr_name'
@@ -28,18 +26,18 @@ class RepresenterConfiguration(object):
     """
     Class maintaining representer configuration options.
 
-    At present, this can also be used as base class for containers declaring 
+    At present, this can also be used as base class for containers declaring
     representer configuration data as static class attributes. However, this
     usage is discouraged and should be replaced with the new ZCML based
     declaration syntax.
 
     Representer configuration objects maintain two kinds of configuration
     data:
-    
-    1) Generic options. These can be any key:value pairs. Derived 
-       classes need to declare valid options in the 
-       :cvar:`_default_config_options` class variable. 
-    
+
+    1) Generic options. These can be any key:value pairs. Derived
+       classes need to declare valid options in the
+       :cvar:`_default_config_options` class variable.
+
     2) Attributes options. These are kept in a dictionary mapping the mapped
        attribute name to a dictionary of options which control the way each
        attribute is mapped. Valid option names for a given attribute are:
@@ -52,23 +50,16 @@ class RepresenterConfiguration(object):
        %(WRITE_MEMBERS_AS_LINK_OPTION)s :
          Write members of a mapped collection attribute as a link rather
          than as a full representation.
-       %(IGNORE_ON_READ_OPTION)s:
-         Ignore this attribute when reading a representation.
-       %(IGNORE_ON_WRITE_OPTION)s:
-         Ignore this attribute when writing a representation.
        %(IGNORE_OPTION)s :
-         Ignore this attribute when creating a representation. This is short
-         for setting both ignore_on_read and ignore_on_write
-            
-       Derived classes may add more allowed mapping options; those must be 
+         Ignore this attribute when creating a representation.
+
+       Derived classes may add more allowed mapping options; those must be
        declared in the :cvar:`_default_attributes_options` class variable.
     """ % globals() # doc string must not be assigned pylint: disable=W0106
-
     #: Default configuration option names (immutable).
     _default_config_options = {}
     #: Default mapping option names (immutable).
-    _default_attributes_options = {IGNORE_ON_READ_OPTION:None,
-                                   IGNORE_ON_WRITE_OPTION:None,
+    _default_attributes_options = {IGNORE_OPTION:None,
                                    WRITE_AS_LINK_OPTION:None,
                                    WRITE_MEMBERS_AS_LINK_OPTION:None,
                                    REPR_NAME_OPTION:None}
@@ -78,7 +69,7 @@ class RepresenterConfiguration(object):
         self.__options = self._default_config_options.copy()
         # {attr key : { attr name : {{option name : option value}}}
         self.__attribute_options = \
-                        defaultdict(self._default_config_options.copy)
+                        defaultdict(self._default_attributes_options.copy)
         self.__update(options, attribute_options)
 
     def copy(self):
@@ -120,11 +111,19 @@ class RepresenterConfiguration(object):
         return self.__options.copy()
 
     def set_attribute_option(self, attribute_key, option_name, option_value):
+        """
+        Sets the given attribute option to the given value for the specified
+        attribute key.
+        """
         self.__validate_attribute_option_name(option_name)
         mp_options = self.__attribute_options.setdefault(attribute_key, {})
         mp_options[option_name] = option_value
 
     def get_attribute_option(self, attribute_key, option_name):
+        """
+        Returns the value of the given attribute option for the specified
+        attribute key.
+        """
         self.__validate_attribute_option_name(option_name)
         return self.__attribute_options[attribute_key].get(option_name)
 
@@ -168,8 +167,7 @@ class RepresenterConfiguration(object):
                              (name, self.__class__.__name__))
 
     def __validate_attribute_option_name(self, name):
-        if not (name in self._default_attributes_options.keys()
-                or name == IGNORE_OPTION):
+        if not name in self._default_attributes_options.keys():
             raise ValueError('Invalid attribute option name "%s" '
                              'for %s representer.'
                              % (name, self.__class__.__name__))

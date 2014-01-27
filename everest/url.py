@@ -6,12 +6,15 @@ See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Jun 28, 2011.
 """
+from everest.compat import parse_qsl
 from everest.interfaces import IResourceUrlConverter
 from everest.querying.base import EXPRESSION_KINDS
 from everest.querying.filterparser import parse_filter
 from everest.querying.orderparser import parse_order
 from everest.resources.interfaces import ICollectionResource
 from everest.resources.interfaces import IMemberResource
+from everest.resources.interfaces import IResource
+from everest.resources.utils import get_root_collection
 from everest.utils import get_filter_specification_visitor
 from everest.utils import get_order_specification_visitor
 from pyparsing import ParseException
@@ -19,8 +22,6 @@ from pyramid.compat import url_unquote
 from pyramid.compat import urlparse
 from pyramid.traversal import find_resource
 from pyramid.traversal import traversal_path
-from pyramid.url import model_url
-from urlparse import parse_qsl
 from zope.interface import implementer # pylint: disable=E0611,F0401
 from zope.interface import providedBy as provided_by # pylint: disable=E0611,F0401
 
@@ -45,12 +46,12 @@ class ResourceUrlConverter(object):
 
     def url_to_resource(self, url):
         """
-        Converts the given url into a resource.
+        Returns the resource that is addressed by the given URL.
 
         :param str url: URL to convert
         :return: member or collection resource
 
-        ::note : If the query string in the URL has multiple values for a
+        :note: If the query string in the URL has multiple values for a
           query parameter, the last definition in the query string wins.
         """
         parsed = urlparse.urlparse(url)
@@ -77,10 +78,22 @@ class ResourceUrlConverter(object):
             raise ValueError('Traversal found non-resource object "%s".' % rc)
         return rc
 
-    def resource_to_url(self, resource, **kw):
-        if ICollectionResource in provided_by(resource):
+    def resource_to_url(self, resource):
+        """
+        Returns the URL for the given resource.
+
+        :raises ValueError: If the given resource is floating (i.e., has
+          the parent attribute set to `None`)
+        """
+        ifc = provided_by(resource)
+        if not IResource in ifc:
+            raise TypeError('Can not generate URL for non-resource "%s".'
+                            % resource)
+        elif resource.__parent__ is None:
+            raise ValueError('Can not generate URL for floating resource '
+                             '"%s".' % resource)
+        if ICollectionResource in ifc:
             query = {}
-            query.update(kw)
             if not resource.filter is None:
                 query['q'] = \
                     UrlPartsConverter.make_filter_string(resource.filter)
@@ -91,27 +104,45 @@ class ResourceUrlConverter(object):
                 query['start'], query['size'] = \
                     UrlPartsConverter.make_slice_strings(resource.slice)
             if query != {}:
-                url = model_url(resource, self.__request, query=query)
+                options = dict(query=query)
             else:
-                url = model_url(resource, self.__request)
-        elif not IMemberResource in provided_by(resource):
-            raise ValueError('Can not convert non-resource object "%s to '
-                             'URL".' % resource)
+                options = dict()
+            if not resource.is_root_collection:
+                # For nested collections, we check if the referenced root
+                # collection is exposed (i.e., has the service as parent).
+                # If yes, we return an absolute URL, else a nested URL.
+                root_coll = get_root_collection(resource)
+                if not root_coll.has_parent:
+                    url = self.__request.resource_url(resource, **options)
+                else:
+                    url = self.__request.resource_url(root_coll, **options)
+            else:
+                url = self.__request.resource_url(resource, **options)
         else:
-            if resource.__parent__ is None:
-                raise ValueError('Can not generate URL for floating member '
-                                 '"%s".' % resource)
-            url = model_url(resource, self.__request)
+            if not resource.is_root_member:
+                # For nested members, we check if the referenced root
+                # collection is exposed (i.e., has the service as parent).
+                # If yes, we return an absolute URL, else a nested URL.
+                root_coll = get_root_collection(resource)
+                if not root_coll.has_parent:
+                    par_url = self.__request.resource_url(resource)
+                else:
+                    par_url = self.__request.resource_url(root_coll)
+                url = "%s%s/" % (par_url, resource.__name__)
+            else:
+                url = self.__request.resource_url(resource)
         return url_unquote(url)
 
 
 class UrlPartsConverter(object):
-
+    """
+    Helper class providing functionality to convert parts of a URL to
+    specifications and vice versa.
+    """
     @classmethod
     def make_filter_specification(cls, filter_string):
         """
-        Extracts the "query" parameter from the given request and converts
-        the given query string into a filter specification.
+        Converts the given CQL filter expression into a filter specification.
         """
         try:
             return parse_filter(filter_string)
@@ -120,6 +151,9 @@ class UrlPartsConverter(object):
 
     @classmethod
     def make_filter_string(cls, filter_specification):
+        """
+        Converts the given filter specification to a CQL filter expression.
+        """
         visitor_cls = get_filter_specification_visitor(EXPRESSION_KINDS.CQL)
         visitor = visitor_cls()
         filter_specification.accept(visitor)
@@ -127,6 +161,9 @@ class UrlPartsConverter(object):
 
     @classmethod
     def make_order_specification(cls, order_string):
+        """
+        Converts the given CQL sort expression to a order specification.
+        """
         try:
             return parse_order(order_string)
         except ParseException as err:
@@ -134,6 +171,9 @@ class UrlPartsConverter(object):
 
     @classmethod
     def make_order_string(cls, order_specification):
+        """
+        Converts the given order specification to a CQL order expression.
+        """
         visitor_cls = get_order_specification_visitor(EXPRESSION_KINDS.CQL)
         visitor = visitor_cls()
         order_specification.accept(visitor)
@@ -142,8 +182,7 @@ class UrlPartsConverter(object):
     @classmethod
     def make_slice_key(cls, start_string, size_string):
         """
-        Extracts the "start" and "size" parameters from the given
-        start and size parameter strings and constructs a slice from it.
+        Converts the given start and size query parts to a slice key.
 
         :return: slice key
         :rtype: slice
@@ -166,8 +205,9 @@ class UrlPartsConverter(object):
 
     @classmethod
     def make_slice_strings(cls, slice_key):
+        """
+        Converts the given slice key to start and size query parts.
+        """
         start = slice_key.start
         size = slice_key.stop - start
         return (str(start), str(size))
-
-

@@ -1,7 +1,7 @@
 """
 Order specification visitor classes.
 
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Jul 5, 2011.
@@ -17,15 +17,16 @@ from zope.interface import implementer # pylint: disable=E0611,F0401
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['BubbleSorter',
-           'Sorter',
-           'SorterTemplate',
+           'CqlOrderExpression',
            'CqlOrderSpecificationVisitor',
            'OrderSpecificationVisitor',
+           'RepositoryOrderSpecificationVisitor',
+           'Sorter',
+           'SorterTemplate',
            ]
 
 
 class Sorter(object):
-
     _order = None
 
     def __init__(self, order):
@@ -41,7 +42,6 @@ class Sorter(object):
 
 
 class SorterTemplate(Sorter):
-
     def __init__(self, order):
         if self.__class__ is SorterTemplate:
             raise NotImplementedError('Abstract class')
@@ -64,7 +64,6 @@ class SorterTemplate(Sorter):
 
 
 class BubbleSorter(SorterTemplate):
-
     def __init__(self, order):
         SorterTemplate.__init__(self, order)
 
@@ -86,11 +85,10 @@ class OrderSpecificationVisitor(SpecificationVisitor):
     """
     Base class for order specification visitors.
     """
-
-    def _asc_op(self, attr_name):
+    def _asc_op(self, spec):
         raise NotImplementedError('Abstract method.')
 
-    def _desc_op(self, attr_name):
+    def _desc_op(self, spec):
         raise NotImplementedError('Abstract method.')
 
 
@@ -115,7 +113,6 @@ class CqlOrderSpecificationVisitor(OrderSpecificationVisitor):
     """
     Order specification visitor building a CQL expression.
     """
-
     def _conjunction_op(self, spec, *expressions):
         res = func_reduce(and_operator, expressions)
         return res
@@ -130,3 +127,19 @@ class CqlOrderSpecificationVisitor(OrderSpecificationVisitor):
 
     def __preprocess_attribute(self, attr_name):
         return slug_from_identifier(attr_name)
+
+
+class RepositoryOrderSpecificationVisitor(OrderSpecificationVisitor): # pylint: disable=W0223
+    """
+    Specification visitors that build order expressions for a repository
+    backend.
+    """
+    def __init__(self, entity_class):
+        OrderSpecificationVisitor.__init__(self)
+        self._entity_class = entity_class
+
+    def order_query(self, query):
+        """
+        Returns the given query ordered by this visitor's order expression.
+        """
+        return query.order(self.expression)

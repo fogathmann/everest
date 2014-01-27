@@ -1,10 +1,13 @@
 """
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Mar 2, 2012.
 """
 from collections import OrderedDict
+import os
+
+from everest.constants import RESOURCE_KINDS
 from everest.mime import AtomMime
 from everest.mime import CsvMime
 from everest.mime import JsonMime
@@ -17,6 +20,8 @@ from everest.representers.config import REPR_NAME_OPTION
 from everest.representers.config import WRITE_AS_LINK_OPTION
 from everest.representers.csv import CsvData
 from everest.representers.csv import CsvResourceRepresenter
+from everest.representers.interfaces import ILinkedDataElement
+from everest.representers.interfaces import IMemberDataElement
 from everest.representers.interfaces import IRepresenterRegistry
 from everest.representers.json import JsonDataTreeTraverser
 from everest.representers.traversal import \
@@ -28,21 +33,23 @@ from everest.representers.xml import XML_NAMESPACE_OPTION
 from everest.representers.xml import XML_PREFIX_OPTION
 from everest.representers.xml import XML_SCHEMA_OPTION
 from everest.representers.xml import XML_TAG_OPTION
-from everest.resources.kinds import ResourceKinds
+from everest.resources.attributes import get_resource_class_attribute
 from everest.resources.link import Link
 from everest.resources.staging import create_staging_collection
 from everest.resources.utils import get_collection_class
 from everest.resources.utils import get_member_class
+from everest.resources.utils import get_root_collection
 from everest.testing import Pep8CompliantTestCase
 from everest.testing import ResourceTestCase
 from everest.tests.complete_app.entities import MyEntity
+from everest.tests.complete_app.entities import MyEntityChild
 from everest.tests.complete_app.entities import MyEntityParent
 from everest.tests.complete_app.interfaces import IMyEntity
 from everest.tests.complete_app.resources import MyEntityMember
 from everest.tests.complete_app.resources import MyEntityParentMember
 from everest.tests.complete_app.testing import create_collection
 from zope.interface import Interface # pylint: disable=E0611,F0401
-import os
+
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['AtomRepresentationTestCase',
@@ -102,21 +109,20 @@ class AttributesTestCase(Pep8CompliantTestCase):
     config_file_name = 'configure_no_rdb.zcml'
 
     def test_defaults(self):
-        rc_attr = MyEntityMember.get_attributes()['number']
+        rc_attr = get_resource_class_attribute(MyEntityMember, 'number')
         mp_attr = MappedAttribute(rc_attr)
-        self.assert_equal(mp_attr.repr_name, rc_attr.name)
+        self.assert_equal(mp_attr.repr_name, rc_attr.entity_attr)
         self.assert_raises(AttributeError, getattr, mp_attr, 'foo')
-        self.assert_true(str(mp_attr).startswith(mp_attr.__class__.__name__))
+        self.assert_true(str(mp_attr).startswith(mp_attr.attr_type.__name__))
 
     def test_ignore(self):
-        rc_attr = MyEntityMember.get_attributes()['number']
+        rc_attr = get_resource_class_attribute(MyEntityMember, 'number')
         mp_attr = MappedAttribute(rc_attr,
                                   options={IGNORE_OPTION:False})
-        self.assert_true(mp_attr.ignore_on_read is False)
-        self.assert_true(mp_attr.ignore_on_write is False)
+        self.assert_true(getattr(mp_attr, IGNORE_OPTION) is False)
 
     def test_clone(self):
-        rc_attr = MyEntityMember.get_attributes()['number']
+        rc_attr = get_resource_class_attribute(MyEntityMember, 'number')
         mp_attr = MappedAttribute(rc_attr)
         mp_attr_clone = mp_attr.clone()
         self.assert_equal(mp_attr.options, mp_attr_clone.options)
@@ -130,11 +136,17 @@ class AttributesTestCase(Pep8CompliantTestCase):
 class TestCsvData(Pep8CompliantTestCase):
     def test_methods(self):
         csvd0 = CsvData()
-        csvd1 = CsvData(OrderedDict(foo='foo', bar=1))
+        od1 = OrderedDict()
+        od1['foo'] = 'foo'
+        od1['bar'] = 1
+        csvd1 = CsvData(od1)
         csvd0.expand(csvd1)
         self.assert_equal(csvd0.fields, ['foo', 'bar'])
         self.assert_equal(csvd0.data, [['foo', 1]])
-        csvd2 = CsvData(OrderedDict(foo='foo1', bar=2))
+        od2 = OrderedDict()
+        od2['foo'] = 'foo1'
+        od2['bar'] = 2
+        csvd2 = CsvData(od2)
         csvd0.append(csvd2)
         self.assert_equal(csvd0.fields, ['foo', 'bar'])
         self.assert_equal(csvd0.data, [['foo', 1], ['foo1', 2]])
@@ -151,7 +163,8 @@ class _RepresenterTestCase(ResourceTestCase):
     def test_member_representer(self):
         mb = next(iter(self._collection))
         rpr = as_representer(mb, self.content_type)
-        mb_reloaded = rpr.from_string(rpr.to_string(mb))
+        rpr_str = rpr.to_string(mb)
+        mb_reloaded = rpr.from_string(rpr_str)
         self.assert_equal(mb.id, mb_reloaded.id)
 
     def _test_with_defaults(self, check_string, do_roundtrip=True):
@@ -173,7 +186,7 @@ class _RepresenterTestCase(ResourceTestCase):
         attribute_options = {('children',):{IGNORE_OPTION:False,
                                             WRITE_AS_LINK_OPTION:False}}
         self._test_rpr(attribute_options, check_string,
-                    self._check_nested_collection if do_roundtrip else None)
+                  self._check_nested_collection if do_roundtrip else None)
 
     def _test_with_two_collections_expanded(self, check_string,
                                             do_roundtrip=True):
@@ -182,8 +195,6 @@ class _RepresenterTestCase(ResourceTestCase):
                             WRITE_AS_LINK_OPTION:False},
              ('children', 'children'):{IGNORE_OPTION:False,
                                        WRITE_AS_LINK_OPTION:False},
-             ('children', 'no_backref_children'):{IGNORE_OPTION:False,
-                                                  WRITE_AS_LINK_OPTION:False},
              }
         self._test_rpr(attribute_options, check_string,
                     self._check_nested_collection if do_roundtrip else None)
@@ -228,7 +239,7 @@ class JsonRepresenterTestCase(_RepresenterTestCase):
     def test_json_with_collection_link(self):
         def check_string(rpr_str):
             self.assert_not_equal(
-                                rpr_str.find('my-entities/0/children/'), -1)
+                            rpr_str.find('my-entity-children/?q=parent'), -1)
         self._test_with_collection_link(check_string)
 
     def test_json_with_member_expanded(self):
@@ -265,7 +276,7 @@ class CsvRepresenterTestCase(_RepresenterTestCase):
             lines = rpr_str.split(os.linesep)
             self.assert_true(len(lines), 3)
             self.assert_equal(lines[0],
-                              '"id","parent","nested_parent","text",'
+                              '"id","parent","text",'
                               '"text_rc","number","date_time",'
                               '"parent_text"')
             self.assert_equal(lines[1][0], '0')
@@ -284,7 +295,7 @@ class CsvRepresenterTestCase(_RepresenterTestCase):
             row_data = lines[1].split(',')
             # Now, the collection should be a URL.
             self.assert_not_equal(
-                            row_data[3].find('my-entities/0/children/'), -1)
+                        row_data[2].find('my-entity-children/?q=parent'), -1)
         self._test_with_collection_link(check_string)
 
     def test_csv_with_member_expanded(self):
@@ -292,7 +303,7 @@ class CsvRepresenterTestCase(_RepresenterTestCase):
             lines = rpr_str.split(os.linesep)
             self.assert_equal(lines[0],
                               '"id","parent.id","parent.text",'
-                              '"parent.text_rc","nested_parent","text",'
+                              '"parent.text_rc","text",'
                               '"text_rc","number","date_time",'
                               '"parent_text"')
             row_data = lines[1].split(',')
@@ -310,16 +321,15 @@ class CsvRepresenterTestCase(_RepresenterTestCase):
     def test_csv_with_collection_expanded(self):
         def check_string(rpr_str):
             lines = rpr_str.split(os.linesep)
-            self.assert_equal(lines[0], '"id","parent","nested_parent",'
-                                        '"children.id",'
+            self.assert_equal(lines[0], '"id","parent","children.id",'
                                         '"children.text","children.text_rc",'
                                         '"text","text_rc","number","date_time",'
                                         '"parent_text"')
             row_data = lines[1].split(',')
             # Fourth field should now be "children.id" and contain 0.
-            self.assert_equal(row_data[3], '0')
+            self.assert_equal(row_data[2], '0')
             # Fifth field should be "children.text" and contain "TEXT".
-            self.assert_equal(row_data[4], '"TEXT"')
+            self.assert_equal(row_data[3], '"TEXT"')
         # Ensure unique representation names for nested attributes.
         attribute_options = {
             ('children', 'id') : {REPR_NAME_OPTION:'children.id'},
@@ -330,22 +340,27 @@ class CsvRepresenterTestCase(_RepresenterTestCase):
         self._representer.configure(attribute_options=attribute_options)
         self._test_with_collection_expanded(check_string)
 
-    def test_csv_resource_to_data_roundtrip(self):
-        data_el = self._representer.data_from_resource(self._collection)
-        # Reload from data, ignoring the parent.
+    def test_csv_collection_to_data_roundtrip(self):
         attribute_options = {('parent',):{IGNORE_OPTION:True, },
-                             ('nested_parent',):{IGNORE_OPTION:True, },
                              ('parent_text',):{IGNORE_OPTION:True, }}
         self._representer.configure(attribute_options=attribute_options)
+        data_el = self._representer.data_from_resource(self._collection)
         loaded_coll = self._representer.resource_from_data(data_el)
         self.assert_true(next(iter(loaded_coll)).parent is None)
+
+    def test_csv_member_to_data_roundtrip_in_place(self):
+        mb = self._collection['0']
+        parent = mb.parent
+        data_el = self._representer.data_from_resource(mb)
+        self._representer.resource_from_data(data_el, resource=mb)
+        self.assert_true(mb.parent.get_entity() is parent.get_entity())
 
     def test_csv_with_two_collections_expanded(self):
         def check_string(rpr_str):
             lines = rpr_str.split(os.linesep)
             row_data = lines[1].split(',')
-            # Sixth field should be "children.children.id".
-            self.assert_equal(row_data[5], '0')
+            #  field should be "children.children.id".
+            self.assert_equal(row_data[4], '0')
         self._test_with_two_collections_expanded(check_string,
                                                  do_roundtrip=False)
 
@@ -353,37 +368,36 @@ class CsvRepresenterTestCase(_RepresenterTestCase):
         attribute_options = \
             {('children',):{IGNORE_OPTION:True, },
              ('parent',):{IGNORE_OPTION:True, },
-             ('nested_parent',):{IGNORE_OPTION:True, },
              ('parent_text',):{IGNORE_OPTION:True, },
              ('text',):{REPR_NAME_OPTION:u'custom_text'}
              }
         self._representer.configure(attribute_options=attribute_options)
         data = self._representer.data_from_resource(self._collection)
-        rpr_str = self._representer.representation_from_data(data)
+        rpr_str = self._representer.string_from_data(data)
         lines = rpr_str.split(os.linesep)
         self.assert_equal(lines[0],
                           '"id","custom_text","text_rc","number","date_time"')
 
-    def test_csv_data_from_representation(self):
+    def test_csv_data_from_string(self):
         csv_invalid_field = '"id","text","number","foo"\n0,"abc",0,"xyz"'
         with self.assert_raises(ValueError) as cm:
-            self._representer.data_from_representation(csv_invalid_field)
+            self._representer.data_from_string(csv_invalid_field)
         self.assert_true(str(cm.exception).startswith('Invalid field'))
         csv_invalid_row_length = '"id","text","number"\n0,"abc",0,"xyz",5'
         with self.assert_raises(ValueError) as cm:
-            self._representer.data_from_representation(csv_invalid_row_length)
+            self._representer.data_from_string(csv_invalid_row_length)
         self.assert_true(
                     str(cm.exception).startswith('Invalid row length'))
         csv_value_for_ignored_field = '"id","children"\n' \
                                       '0,"http://0.0.0.0/my-entity-parents/0"'
         with self.assert_raises(ValueError) as cm:
-            self._representer.data_from_representation(
+            self._representer.data_from_string(
                                                 csv_value_for_ignored_field)
         self.assert_true(str(cm.exception).startswith(
                                                     'Value for attribute'))
         csv_invalid_link = '"id","parent"\n0,"my-entity-parents/0"'
         with self.assert_raises(ValueError) as cm:
-            self._representer.data_from_representation(csv_invalid_link)
+            self._representer.data_from_string(csv_invalid_link)
         self.assert_true(str(cm.exception).startswith(
                                             'Value for nested attribute'))
 
@@ -399,7 +413,7 @@ class CsvRepresenterTestCase(_RepresenterTestCase):
         csv_two_colls_expanded = \
                 '"id","children.id","children.children.id"\n0,0,0'
         with self.assert_raises(ValueError) as cm:
-            self._representer.data_from_representation(csv_two_colls_expanded)
+            self._representer.data_from_string(csv_two_colls_expanded)
         self.assert_true(str(cm.exception).startswith(
                                             'All but one nested collection'))
 
@@ -411,7 +425,7 @@ class CsvRepresenterTestCase(_RepresenterTestCase):
         self._representer.configure(attribute_options=attribute_options)
         csv_multiple_nested_members = \
                 '"id","children.id"\n0,0\n0,1'
-        data_el = self._representer.data_from_representation(
+        data_el = self._representer.data_from_string(
                                                 csv_multiple_nested_members)
         self.assert_true(len(data_el), 1)
         self.assert_equal(
@@ -419,19 +433,19 @@ class CsvRepresenterTestCase(_RepresenterTestCase):
           1)
 
     def test_csv_none_attribute_value(self):
-        ent = next(iter(self._collection)).get_entity()
+        ent = self._collection['0'].get_entity()
         ent.text = None
         def check_string(rpr_str):
             lines = rpr_str.split(os.linesep)
             self.assert_true(len(lines), 3)
             # Make sure the header is correct.
             self.assert_equal(lines[0],
-                              '"id","parent","nested_parent","text",'
+                              '"id","parent","text",'
                               '"text_rc","number","date_time",'
                               '"parent_text"')
             # None value represented as the empty string.
-            self.assert_equal(lines[1].split(',')[3], '""')
-            self.assert_equal(lines[2].split(',')[3], '"too1"')
+            self.assert_equal(lines[1].split(',')[2], '""')
+            self.assert_equal(lines[2].split(',')[2], '"too1"')
         self._test_with_defaults(check_string)
 
 
@@ -449,8 +463,7 @@ class XmlRepresenterTestCase(ResourceTestCase):
         coll = create_collection()
         rpr = as_representer(coll, XmlMime)
         attribute_options = \
-                {('nested_parent',):{IGNORE_OPTION:True},
-                 ('text_rc',):{IGNORE_OPTION:True},
+                {('text_rc',):{IGNORE_OPTION:True},
                  ('parent_text',):{IGNORE_OPTION:True},
                  ('children',):{IGNORE_OPTION:False,
                                 WRITE_AS_LINK_OPTION:True},
@@ -458,7 +471,7 @@ class XmlRepresenterTestCase(ResourceTestCase):
         rpr.configure(attribute_options=attribute_options)
         data = rpr.data_from_resource(coll)
         self.assert_equal(len(data), 2)
-        rpr_str = rpr.representation_from_data(data)
+        rpr_str = rpr.string_from_data(data)
         reloaded_coll = rpr.from_string(rpr_str)
         self.assert_equal(len(reloaded_coll), 2)
 
@@ -483,9 +496,19 @@ class XmlRepresenterTestCase(ResourceTestCase):
         coll = create_collection()
         mb = next(iter(coll))
         mp = self.__get_member_mapping_and_representer()[0]
-        de = mp.map_to_data_element(mb)
-        self.assert_equal(de.data.keys(),
-                          ['text', 'date_time', 'myentityparent', 'number'])
+        mp.configuration.set_attribute_option(('parent',),
+                                              WRITE_AS_LINK_OPTION, False)
+        de1 = mp.map_to_data_element(mb)
+        self.assert_equal(list(de1.data.keys()),
+                          ['myentityparent', 'text', 'number', 'date_time'])
+        self.assert_equal(de1.data['number'], 1)
+        self.assert_true(
+            IMemberDataElement.providedBy(de1.data['myentityparent'])) # pylint:disable=E1101
+        mp.configuration.set_attribute_option(('parent',),
+                                              WRITE_AS_LINK_OPTION, True)
+        de2 = mp.map_to_data_element(mb)
+        self.assert_true(
+            ILinkedDataElement.providedBy(de2.data['myentityparent'])) # pylint:disable=E1101
 
     def test_create(self):
         mp = self.__get_collection_mapping_and_representer()[0]
@@ -534,8 +557,8 @@ class XmlRepresenterTestCase(ResourceTestCase):
         attr = mp.get_attribute_map()['parent']
         self.assert_equal(attr.namespace, ns)
         de = mp.map_to_data_element(mb)
-        self.assert_equal(de.data.keys(),
-                          ['text', 'date_time', 'myentityparent', 'number'])
+        self.assert_equal(list(de.data.keys()),
+                          ['myentityparent', 'text', 'number', 'date_time'])
         parent_de = de.get_nested(attr)
         self.assert_equal(parent_de.tag.find('{'), -1)
 
@@ -551,7 +574,7 @@ class XmlRepresenterTestCase(ResourceTestCase):
         mp = mp_reg.find_mapping(Link)
         de = mp.data_element_class.create_from_resource(coll)
         link_el = next(de.iterchildren())
-        self.assert_equal(link_el.get_kind(), ResourceKinds.COLLECTION)
+        self.assert_equal(link_el.get_kind(), RESOURCE_KINDS.COLLECTION)
         self.assert_not_equal(link_el.get_relation().find('myentity'), -1)
         self.assert_true(link_el.get_title().startswith('Collection of'))
         self.assert_true(link_el.get_id() is None)
@@ -569,7 +592,7 @@ class XmlRepresenterTestCase(ResourceTestCase):
         coll = object.__new__(get_collection_class(IMyEntity))
         rpr = as_representer(coll, XmlMime)
         with self.assert_raises(SyntaxError) as cm:
-            rpr.from_string('<?xml version="1.0" encoding="UTF-8"?><murks/>')
+            rpr.from_string('<murks/>')
         exc_msg = 'Could not parse XML document for schema'
         self.assert_not_equal(str(cm.exception).find(exc_msg), -1)
 
@@ -578,7 +601,7 @@ class XmlRepresenterTestCase(ResourceTestCase):
         mp.configuration.set_option(XML_SCHEMA_OPTION,
                                     'everest:tests/complete_app/NoXml.xsd')
         with self.assert_raises(SyntaxError) as cm:
-            rpr.from_string('<?xml version="1.0" encoding="UTF-8"?>')
+            rpr.from_string('')
         exc_msg = 'Could not parse XML schema'
         self.assert_not_equal(str(cm.exception).find(exc_msg), -1)
 
@@ -587,7 +610,7 @@ class XmlRepresenterTestCase(ResourceTestCase):
         mp.configuration.set_option(XML_SCHEMA_OPTION,
                                     'everest:tests/complete_app/NoSchema.xsd')
         with self.assert_raises(SyntaxError) as cm:
-            rpr.from_string('<?xml version="1.0" encoding="UTF-8"?>')
+            rpr.from_string('')
         exc_msg = 'Invalid XML schema'
         self.assert_not_equal(str(cm.exception).find(exc_msg), -1)
 
@@ -614,8 +637,7 @@ class AtomRepresentationTestCase(ResourceTestCase):
         def _test(rc):
             rpr = as_representer(rc, AtomMime)
             rpr_str = rpr.to_string(rc)
-            self.assert_not_equal(
-              rpr_str.find('<feed xmlns:ent="http://xml.test.org/tests"'), -1)
+            self.assert_not_equal(rpr_str.find('<feed xmlns:'), -1)
         coll = create_collection()
         _test(coll)
         coll.slice = slice(0, 1)
@@ -647,7 +669,7 @@ class _RepresenterConfigurationTestCase(ResourceTestCase):
         row_data = lines[1].split(',')
         # Collection should be a link.
         self.assert_not_equal(
-                row_data[chld_field_idx].find('my-entities/0/children/'), -1)
+            row_data[chld_field_idx].find('my-entity-children/?q=parent'), -1)
 
 
 class RepresenterConfigurationNoTypesTestCase(
@@ -730,32 +752,48 @@ class UpdateResourceFromDataTestCase(ResourceTestCase):
     package_name = 'everest.tests.complete_app'
     config_file_name = 'configure_no_rdb.zcml'
 
-    def test_update_collection_from_data_with_id_raises_error(self):
-        coll = create_collection()
-        rpr = as_representer(coll, CsvMime)
-        upd_coll = create_staging_collection(IMyEntity)
-        ent = MyEntity(id=2)
-        upd_coll.create_member(ent)
-        de = rpr.data_from_resource(upd_coll)
-        with self.assert_raises(ValueError) as cm:
-            coll.update_from_data(de)
-        exc_msg = 'New member data should not provide an ID attribute.'
-        self.assert_equal(str(cm.exception), exc_msg)
-
     def test_update_nested_member_from_data(self):
         # Set up member that does not have a parent.
+        root_coll = get_root_collection(IMyEntity)
         ent = MyEntity(id=1)
-        mb = MyEntityMember.create_from_entity(ent)
+        mb = root_coll.create_member(ent)
         # Set up second member with same ID that does have a parent.
+        coll = create_staging_collection(IMyEntity)
         parent = MyEntityParent(id=0)
         upd_ent = MyEntity(id=1, parent=parent)
-        upd_mb = MyEntityMember.create_from_entity(upd_ent)
+        upd_mb = coll.create_member(upd_ent)
         rpr = as_representer(mb, CsvMime)
-        attribute_options = {('parent',):{WRITE_AS_LINK_OPTION:False}, }
+        attribute_options = {('parent',):{WRITE_AS_LINK_OPTION:False}}
         rpr.configure(attribute_options=attribute_options)
         de = rpr.data_from_resource(upd_mb)
-        mb.update_from_data(de)
+        mb.update(de)
         self.assert_equal(mb.parent.id, parent.id)
+
+    def test_update_nested_collection_from_data(self):
+        # Set up member that has one child.
+        root_coll = get_root_collection(IMyEntity)
+        ent = MyEntity(id=1)
+        child0 = MyEntityChild(id=0)
+        ent.children.append(child0)
+        mb = root_coll.create_member(ent)
+        # Set up another member with two children with different IDs.
+        stg_coll = create_staging_collection(IMyEntity)
+        upd_ent = MyEntity(id=1)
+        child1 = MyEntityChild(id=1)
+        child1.parent = upd_ent
+        child2 = MyEntityChild(id=2)
+        child2.parent = upd_ent
+        upd_ent.children.append(child1)
+        upd_ent.children.append(child2)
+        upd_mb = stg_coll.create_member(upd_ent)
+        rpr = as_representer(mb, CsvMime)
+        attribute_options = {('children',):{IGNORE_OPTION:False,
+                                            WRITE_AS_LINK_OPTION:False}, }
+        rpr.configure(attribute_options=attribute_options)
+        de = rpr.data_from_resource(upd_mb)
+        #
+        mb.update(de)
+        self.assert_equal(set([mb.id for mb in mb.children]), set([1, 2]))
 
 
 # pylint: disable=W0232

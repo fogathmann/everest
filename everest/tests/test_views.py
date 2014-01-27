@@ -4,16 +4,24 @@ See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Nov 17, 2011.
 """
+from pkg_resources import resource_filename # pylint: disable=E0611
+from pyramid.compat import native_
+from pyramid.testing import DummyRequest
+import transaction
+
+from everest.constants import RequestMethods
 from everest.mime import CSV_MIME
 from everest.mime import CsvMime
+from everest.mime import XmlMime
 from everest.renderers import RendererFactory
-from everest.repositories.rdb.utils import RdbTestCaseMixin
+from everest.repositories.rdb.testing import RdbTestCaseMixin
 from everest.resources.interfaces import IService
 from everest.resources.utils import get_collection_class
 from everest.resources.utils import get_root_collection
 from everest.resources.utils import get_service
 from everest.resources.utils import resource_to_url
 from everest.testing import FunctionalTestCase
+from everest.testing import ResourceTestCase
 from everest.tests.complete_app.entities import MyEntity
 from everest.tests.complete_app.interfaces import IMyEntity
 from everest.tests.complete_app.interfaces import IMyEntityChild
@@ -31,10 +39,8 @@ from everest.utils import get_repository_manager
 from everest.views.getcollection import GetCollectionView
 from everest.views.static import public_view
 from everest.views.utils import accept_csv_only
-from pkg_resources import resource_filename # pylint: disable=E0611
-from pyramid.testing import DummyRequest
-import transaction
-from everest.testing import ResourceTestCase
+from pyramid.compat import bytes_
+
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['BasicViewTestCase',
@@ -61,19 +67,22 @@ class BasicViewTestCase(FunctionalTestCase):
         self.config.load_zcml('everest.tests.complete_app:configure_rpr.zcml')
         self.config.add_resource_view(IMyEntity,
                                       renderer='csv',
-                                      request_method='GET')
+                                      request_method=RequestMethods.GET)
         self.config.add_member_view(IMyEntity,
                                     renderer='csv',
-                                    request_method='PUT')
+                                    request_method=RequestMethods.PUT)
+        self.config.add_member_view(IMyEntity,
+                                    renderer='csv',
+                                    request_method=RequestMethods.PATCH)
         self.config.add_collection_view(IMyEntity,
                                         renderer='csv',
-                                        request_method='POST')
+                                        request_method=RequestMethods.POST)
         self.config.add_collection_view(IMyEntityChild,
                                         renderer='csv',
-                                        request_method='POST')
+                                        request_method=RequestMethods.POST)
         self.config.add_member_view(IMyEntity,
                                     renderer='csv',
-                                    request_method='DELETE')
+                                    request_method=RequestMethods.DELETE)
 
     def test_get_collection_defaults(self):
         res = self.app.get(self.path, status=200)
@@ -131,18 +140,65 @@ class BasicViewTestCase(FunctionalTestCase):
         ent = MyEntity(id=0)
         mb = coll.create_member(ent)
         self.assert_equal(mb.__name__, '0')
-        req_body = '"id","text","number"\n1,"abc",2\n'
+        req_body = b'"id","text","number"\n0,"abc",2\n'
         res = self.app.put("%s/0" % self.path,
                            params=req_body,
                            content_type=CsvMime.mime_type_string,
                            status=200)
         self.assert_is_not_none(res)
         mb = next(iter(coll))
-        self.assert_equal(mb.__name__, '1')
         self.assert_equal(mb.text, 'abc')
+        self.assert_equal(mb.number, 2)
+        req_body = b'"id","text","number"\n2,"abc",2\n'
+        res = self.app.put("%s/0" % self.path,
+                           params=req_body,
+                           content_type=CsvMime.mime_type_string,
+                           status=200)
+        self.assert_equal(mb.id, 2)
+        self.assert_true(res.headers['Location'].endswith('2/'))
+
+    def test_patch_member(self):
+        coll = get_root_collection(IMyEntity)
+        ent = MyEntity(id=0)
+        mb = coll.create_member(ent)
+        self.assert_equal(mb.__name__, '0')
+        req_body = b'"number"\n2\n'
+        res = self.app.patch("%s/0" % self.path,
+                             params=req_body,
+                             content_type=CsvMime.mime_type_string,
+                             status=200)
+        self.assert_is_not_none(res)
+        mb = next(iter(coll))
+        self.assert_equal(mb.number, 2)
+        req_body = b'"id"\n2\n'
+        res = self.app.patch("%s/0" % self.path,
+                             params=req_body,
+                             content_type=CsvMime.mime_type_string,
+                             status=200)
+        self.assert_equal(mb.id, 2)
+        self.assert_true(res.headers['Location'].endswith('2/'))
+
+    def test_patch_member_with_xml(self):
+        self.config.add_member_view(IMyEntity,
+                                    renderer='xml',
+                                    request_method=RequestMethods.PATCH)
+        coll = get_root_collection(IMyEntity)
+        ent = MyEntity(id=0)
+        mb = coll.create_member(ent)
+        req_body = \
+            b'<tst:myentity xmlns:tst="http://xml.test.org/tests" id="0">' \
+            b'    <number>2</number>' \
+            b'</tst:myentity>'
+        res = self.app.patch("%s/0" % self.path,
+                             params=req_body,
+                             content_type=XmlMime.mime_type_string,
+                             status=200)
+        self.assert_is_not_none(res)
+        mb = next(iter(coll))
+        self.assert_equal(mb.number, 2)
 
     def test_post_collection(self):
-        req_body = '"id","text","number"\n0,"abc",2\n'
+        req_body = b'"id","text","number"\n0,"abc",2\n'
         res = self.app.post("%s" % self.path,
                             params=req_body,
                             content_type=CsvMime.mime_type_string,
@@ -155,9 +211,9 @@ class BasicViewTestCase(FunctionalTestCase):
     def test_post_nested_collection(self):
         mb, mb_url = self.__make_parent_and_link()
         child_coll = get_root_collection(IMyEntityChild)
-        req_body = '"id","text","parent"\n0,"child","%s"\n' % mb_url
+        req_text = '"id","text","parent"\n0,"child","%s"\n' % mb_url
         res = self.app.post("%schildren" % mb_url,
-                            params=req_body,
+                            params=bytes_(req_text, encoding='utf-8'),
                             content_type=CsvMime.mime_type_string,
                             status=201)
         self.assert_is_not_none(res)
@@ -167,13 +223,13 @@ class BasicViewTestCase(FunctionalTestCase):
 
     def test_post_nested_collection_no_parent(self):
         mb, mb_url = self.__make_parent_and_link()
-        child_coll = get_root_collection(IMyEntityChild)
-        req_body = '"id","text"\n0,"child"\n'
+        req_body = b'"id","text"\n0,"child"\n'
         res = self.app.post("%schildren" % mb_url,
                             params=req_body,
                             content_type=CsvMime.mime_type_string,
                             status=201)
         self.assert_is_not_none(res)
+        child_coll = get_root_collection(IMyEntityChild)
         child_mb = child_coll['0']
         self.assert_equal(child_mb.text, 'child')
         self.assert_equal(child_mb.parent.id, mb.id)
@@ -234,7 +290,7 @@ class PredicatedViewTestCase(FunctionalTestCase):
         self.config.add_view(context=get_collection_class(IMyEntity),
                              view=GetCollectionView,
                              renderer='csv',
-                             request_method='GET',
+                             request_method=RequestMethods.GET,
                              custom_predicates=(accept_csv_only,))
 
     def test_csv_only(self):
@@ -275,12 +331,15 @@ class _ConfiguredViewsTestCase(FunctionalTestCase):
     def _test_with_view_name(self, path_fn):
         # Use suffix traverser as default.
         self.config.add_traverser(SuffixResourceTraverser)
-        for sfx, fn in (('csv', lambda body: body.startswith('"id"')),
-                        ('json', lambda body: body.startswith('[{"id": 0')),
-                        ('xml', lambda body: body.strip().endswith('</foos>'))
-                        ):
+        for sfx, exp, end in (('csv', b'"id"', False),
+                              ('json', b'[{"id": 0', False),
+                              ('xml', b'</foos>', True)
+                              ):
             res = self.app.get(path_fn(self.path, sfx), status=200)
-            self.assert_true(fn(res.body))
+            if not end:
+                self.assert_equal(res.body[:len(exp)], exp)
+            else:
+                self.assert_equal(res.body.strip()[-len(exp):], exp)
         # Fail for non-existing collection.
         self.app.get('/bars.csv', status=404)
 
@@ -301,10 +360,10 @@ class NewStyleConfiguredViewsTestCase(_ConfiguredViewsTestCase):
     def test_default(self):
         # New style views return the default_content_type.
         res = self.app.get(self.path, status=200)
-        self.assert_true(res.body.startswith('<?xml'))
+        self.assert_true(res.body.startswith(b'<?xml'))
 
     def test_custom_view(self):
-        TXT = 'my custom response body'
+        TXT = b'my custom response body'
         def custom_view(context, request): # context unused pylint: disable=W0613
             request.response.body = TXT
             return request.response
@@ -323,35 +382,52 @@ class NewStyleConfiguredViewsTestCase(_ConfiguredViewsTestCase):
                      status=200)
 
     def test_invalid_request_content_type(self):
-        self.config.add_collection_view(IFoo, request_method='POST')
+        self.config.add_collection_view(IFoo,
+                                        request_method=RequestMethods.POST)
         self.app.post(self.path,
                       params='foobar',
                       content_type='application/foobar',
                       status=415)
 
     def test_fake_put_view(self):
-        self.config.add_member_view(IFoo, request_method='FAKE_PUT')
+        self.config.add_member_view(IFoo,
+                                    request_method=RequestMethods.FAKE_PUT)
         req_body = '"id"\n0'
         self.app.post("%s/0" % self.path,
                       params=req_body,
                       content_type=CsvMime.mime_type_string,
-                      headers={'X-HTTP-Method-Override' : 'PUT'},
+                      headers={'X-HTTP-Method-Override' : RequestMethods.PUT},
+                      status=200)
+
+    def test_fake_patch_view(self):
+        self.config.add_member_view(IFoo,
+                                    request_method=RequestMethods.FAKE_PATCH)
+        req_body = '"id"\n0'
+        self.app.post("%s/0" % self.path,
+                      params=req_body,
+                      content_type=CsvMime.mime_type_string,
+                      headers={'X-HTTP-Method-Override' :
+                                                    RequestMethods.PATCH},
                       status=200)
 
     def test_fake_delete_view(self):
-        self.config.add_member_view(IFoo, request_method='FAKE_DELETE')
+        self.config.add_member_view(IFoo,
+                                    request_method=RequestMethods.FAKE_DELETE)
         self.app.post("%s/0" % self.path,
-                      headers={'X-HTTP-Method-Override' : 'DELETE'},
+                      headers=
+                        {'X-HTTP-Method-Override' : RequestMethods.DELETE},
                       status=200)
 
     def test_add_collection_view_with_put_fails(self):
         with self.assert_raises(ValueError) as cm:
-            self.config.add_collection_view(IFoo, request_method='PUT')
+            self.config.add_collection_view(IFoo,
+                                            request_method=RequestMethods.PUT)
         self.assert_true(str(cm.exception).startswith('Autodetection'))
 
     def test_add_member_view_with_post_fails(self):
         with self.assert_raises(ValueError) as cm:
-            self.config.add_member_view(IFoo, request_method='POST')
+            self.config.add_member_view(IFoo,
+                                        request_method=RequestMethods.POST)
         self.assert_true(str(cm.exception).startswith('Autodetection'))
 
 
@@ -391,11 +467,12 @@ class StaticViewTestCase(FunctionalTestCase):
     app_name = 'complete_app'
     def set_up(self):
         FunctionalTestCase.set_up(self)
-        self.config.load_zcml('everest.tests.complete_app:configure_no_rdb.zcml')
+        self.config.load_zcml(
+                        'everest.tests.complete_app:configure_no_rdb.zcml')
         self.config.add_view(context=IService,
                              view=public_view,
                              name='public',
-                             request_method='GET')
+                             request_method=RequestMethods.GET)
         fn = resource_filename('everest.tests.complete_app', 'data/original')
         self.config.registry.settings['public_dir'] = fn
 
@@ -416,10 +493,10 @@ class ExceptionViewTestCase(FunctionalTestCase):
                         'everest.tests.complete_app:configure_no_rdb.zcml')
         self.config.add_member_view(IMyEntity,
                                     view=ExceptionPutMemberView,
-                                    request_method='PUT')
+                                    request_method=RequestMethods.PUT)
         self.config.add_collection_view(IMyEntity,
                                         view=ExceptionPostCollectionView,
-                                        request_method='POST')
+                                        request_method=RequestMethods.POST)
 
     def test_put_member_raises_error(self):
         coll = get_root_collection(IMyEntity)
@@ -454,10 +531,10 @@ class _WarningViewBaseTestCase(FunctionalTestCase):
         repo_mgr.initialize_all()
         self.config.add_collection_view(FooCollection,
                                         view=UserMessagePostCollectionView,
-                                        request_method='POST')
+                                        request_method=RequestMethods.POST)
         self.config.add_member_view(FooMember,
                                     view=UserMessagePutMemberView,
-                                    request_method='PUT')
+                                    request_method=RequestMethods.PUT)
 
     def test_post_collection_empty_body(self):
         res = self.app.post(self.path, params='',
@@ -468,9 +545,10 @@ class _WarningViewBaseTestCase(FunctionalTestCase):
         # First POST - get back a 307.
         res1 = self.app.post(self.path, params='foo name',
                              status=307)
-        self.assert_true(res1.body.rstrip().endswith(
+        body_text = native_(res1.body.rstrip(), encoding='utf-8')
+        self.assert_true(body_text.endswith(
                                     UserMessagePostCollectionView.message))
-        self.assert_true(res1.body.startswith('307 Temporary Redirect'))
+        self.assert_true(res1.body.startswith(b'307 Temporary Redirect'))
         # Second POST to redirection location - get back a 201.
         resubmit_location1 = res1.headers['Location']
         res2 = self.app.post(resubmit_location1,
@@ -485,8 +563,7 @@ class _WarningViewBaseTestCase(FunctionalTestCase):
             res3 = self.app.post(resubmit_location1,
                                  params='foo name',
                                  status=307)
-            self.assert_true(
-                    res3.body.startswith('307 Temporary Redirect'))
+            self.assert_true(res3.body.startswith(b'307 Temporary Redirect'))
             # Fourth POST to new redirection location - get back a 409 (since
             # the second POST from above went through).
             resubmit_location2 = res3.headers['Location']
@@ -519,8 +596,7 @@ class _WarningViewBaseTestCase(FunctionalTestCase):
         res1 = self.app.put(path,
                             params='foo name',
                             status=307)
-        self.assert_true(
-                    res1.body.startswith('307 Temporary Redirect'))
+        self.assert_true(res1.body.startswith(b'307 Temporary Redirect'))
         # Second PUT to redirection location - get back a 200.
         resubmit_location1 = res1.headers['Location']
         res2 = self.app.put(resubmit_location1, params='foo name',
@@ -529,7 +605,8 @@ class _WarningViewBaseTestCase(FunctionalTestCase):
 
 
 class WarningViewMemoryTestCase(_WarningViewBaseTestCase):
-    config_file_name = 'everest.tests.simple_app:configure_messaging_memory.zcml'
+    config_file_name = \
+            'everest.tests.simple_app:configure_messaging_memory.zcml'
 
 
 class WarningViewRdbTestCase(RdbTestCaseMixin, _WarningViewBaseTestCase):
@@ -549,7 +626,7 @@ class WarningWithExceptionViewTestCase(FunctionalTestCase):
                         'everest.tests.complete_app:configure_no_rdb.zcml')
         self.config.add_view(context=get_collection_class(IMyEntity),
                              view=ExceptionPostCollectionView,
-                             request_method='POST')
+                             request_method=RequestMethods.POST)
 
     def test_post_collection_raises_error(self):
         req_body = '"id","text","number"\n0,"abc",2\n'

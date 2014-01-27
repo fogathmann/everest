@@ -4,22 +4,33 @@ See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Feb 21, 2012.
 """
+import glob
+import os
+import shutil
+import tempfile
+import zipfile
+
+from pyramid.compat import NativeIO
+from pyramid.compat import itervalues_
+
+from everest.compat import BytesIO
 from everest.mime import CsvMime
-from everest.repositories.rdb.utils import RdbTestCaseMixin
+from everest.repositories.rdb.testing import RdbTestCaseMixin
 from everest.representers.config import IGNORE_OPTION
-from everest.resources.io import ConnectedResourcesSerializer
-from everest.resources.io import build_resource_dependency_graph
-from everest.resources.io import dump_resource
-from everest.resources.io import dump_resource_to_files
-from everest.resources.io import dump_resource_to_zipfile
-from everest.resources.io import find_connected_resources
-from everest.resources.io import get_collection_filename
-from everest.resources.io import get_collection_name
-from everest.resources.io import load_collection_from_file
-from everest.resources.io import load_collection_from_url
-from everest.resources.io import load_into_collection_from_url
-from everest.resources.io import load_into_collections_from_zipfile
 from everest.resources.staging import create_staging_collection
+from everest.resources.storing import ConnectedResourcesSerializer
+from everest.resources.storing import build_resource_dependency_graph
+from everest.resources.storing import dump_resource
+from everest.resources.storing import dump_resource_to_files
+from everest.resources.storing import dump_resource_to_zipfile
+from everest.resources.storing import find_connected_resources
+from everest.resources.storing import get_collection_filename
+from everest.resources.storing import get_collection_name
+from everest.resources.storing import load_collection_from_file
+from everest.resources.storing import load_collection_from_stream
+from everest.resources.storing import load_collection_from_url
+from everest.resources.storing import load_into_collection_from_url
+from everest.resources.storing import load_into_collections_from_zipfile
 from everest.resources.utils import get_collection_class
 from everest.resources.utils import get_member_class
 from everest.resources.utils import get_root_collection
@@ -32,15 +43,7 @@ from everest.tests.complete_app.interfaces import IMyEntity
 from everest.tests.complete_app.interfaces import IMyEntityChild
 from everest.tests.complete_app.interfaces import IMyEntityGrandchild
 from everest.tests.complete_app.interfaces import IMyEntityParent
-from everest.tests.complete_app.resources import MyEntityChildMember
-from everest.tests.complete_app.resources import MyEntityGrandchildMember
-from pyramid.compat import NativeIO
-from pyramid.compat import itervalues_
-import glob
-import os
-import shutil
-import tempfile
-import zipfile
+
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['ConnectedResourcesTestCase',
@@ -54,15 +57,25 @@ __all__ = ['ConnectedResourcesTestCase',
 
 
 def _make_test_entity_member():
-    parent = MyEntityParent(id=0)
-    entity = MyEntity(id=0, parent=parent)
-    parent.child = entity
-    child = MyEntityChild(id=0, parent=entity)
+    parent = MyEntityParent()
+    entity = MyEntity(parent=parent)
+    if parent.child is None:
+        parent.child = entity
+    child = MyEntityChild()
     entity.children.append(child)
-    grandchild = MyEntityGrandchild(id=0, parent=child)
+    if child.parent is None:
+        child.parent = entity
+    grandchild = MyEntityGrandchild()
     child.children.append(grandchild)
+    if grandchild.parent is None:
+        grandchild.parent = child
     coll = create_staging_collection(IMyEntity)
-    return coll.create_member(entity)
+    mb = coll.create_member(entity)
+    parent.id = 0
+    entity.id = 0
+    child.id = 0
+    grandchild.id = 0
+    return mb
 
 
 class ResourceGraphTestCase(ResourceTestCase):
@@ -98,48 +111,26 @@ class ConnectedResourcesTestCase(ResourceGraphTestCase):
 
     def test_find_connected_with_member(self):
         member = _make_test_entity_member()
-        coll_map = find_connected_resources(member)
-        for coll in itervalues_(coll_map):
-            self.assert_equal(len(coll), 1)
+        ent_map = find_connected_resources(member)
+        for ents in itervalues_(ent_map):
+            self.assert_equal(len(ents), 1)
 
     def test_find_connected_with_collection(self):
         member = _make_test_entity_member()
-        coll_map = find_connected_resources(member.__parent__)
-        for coll in itervalues_(coll_map):
-            self.assert_equal(len(coll), 1)
+        ent_map = find_connected_resources(member.__parent__)
+        for ents in itervalues_(ent_map):
+            self.assert_equal(len(ents), 1)
 
     def test_find_connected_with_deps(self):
         member = _make_test_entity_member()
         dep_grph = \
             build_resource_dependency_graph(self._interfaces,
                                             include_backrefs=True)
-        coll_map = find_connected_resources(member,
+        ent_map = find_connected_resources(member,
                                             dependency_graph=dep_grph)
         # Backrefs should not make a difference since we check for duplicates.
-        for coll in itervalues_(coll_map):
-            self.assert_equal(len(coll), 1)
-
-    def test_find_connected_with_custom_deps(self):
-        member = _make_test_entity_member()
-        ent = member.get_entity()
-        # Point grandchild's parent to new child.
-        new_child = MyEntityChild(id=1, parent=ent)
-        ent.children[0].children[0].parent = new_child
-        # When backrefs are excluded, we should not pick up the new parent
-        # of the grandchild; when backrefs are included, we should.
-        dep_grph = build_resource_dependency_graph(self._interfaces)
-        self.assert_false(dep_grph.has_edge((MyEntityGrandchildMember,
-                                             MyEntityChildMember)))
-        coll_map = find_connected_resources(member)
-        self.assert_equal(len(coll_map[MyEntityChildMember]), 1)
-        dep_grph = \
-            build_resource_dependency_graph(self._interfaces,
-                                            include_backrefs=True)
-        self.assert_true(dep_grph.has_edge((MyEntityGrandchildMember,
-                                            MyEntityChildMember)))
-        coll_map = find_connected_resources(member,
-                                            dependency_graph=dep_grph)
-        self.assert_equal(len(coll_map[MyEntityChildMember]), 2)
+        for ents in itervalues_(ent_map):
+            self.assert_equal(len(ents), 1)
 
     def test_convert_to_strings(self):
         member = _make_test_entity_member()
@@ -157,15 +148,14 @@ class _ResourceIoTestCaseBase(ResourceTestCase):
         self.config.add_resource_representer(
                     IMyEntity, CsvMime,
                     attribute_options=
-                            {('nested_parent',):{IGNORE_OPTION:True},
-                             ('children',):{IGNORE_OPTION:True}
+                            {('children',):{IGNORE_OPTION:True}
                              })
 
 
 class _ZipResourceIoTestCaseBase(_ResourceIoTestCaseBase):
     def test_load_from_zipfile(self):
         member = _make_test_entity_member()
-        strm = NativeIO('w')
+        strm = BytesIO()
         dump_resource_to_zipfile(member, strm)
         colls = [
                  get_root_collection(IMyEntityParent),
@@ -173,7 +163,11 @@ class _ZipResourceIoTestCaseBase(_ResourceIoTestCaseBase):
                  get_root_collection(IMyEntityChild),
                  get_root_collection(IMyEntityGrandchild),
                  ]
-        colls = load_into_collections_from_zipfile(colls, strm)
+        self.assert_equal(len(colls[0]), 0)
+        self.assert_equal(len(colls[1]), 0)
+        self.assert_equal(len(colls[2]), 0)
+        self.assert_equal(len(colls[3]), 0)
+        load_into_collections_from_zipfile(colls, strm)
         self.assert_equal(len(colls[0]), 1)
         self.assert_equal(len(colls[1]), 1)
         self.assert_equal(len(colls[2]), 1)
@@ -184,24 +178,24 @@ class ZipResourceIoTestCaseNoRdb(_ZipResourceIoTestCaseBase):
     config_file_name = 'configure_no_rdb.zcml'
 
     def test_load_from_zipfile_invalid_extension(self):
-        strm = NativeIO('w')
+        strm = BytesIO()
         zipf = zipfile.ZipFile(strm, 'w')
         coll_name = get_collection_name(get_collection_class(IMyEntity))
         zipf.writestr('%s.foo' % coll_name, '')
         zipf.close()
         colls = [get_root_collection(IMyEntity)]
         with self.assert_raises(ValueError) as cm:
-            dummy = load_into_collections_from_zipfile(colls, strm)
+            load_into_collections_from_zipfile(colls, strm)
         exc_msg = 'Could not infer MIME type'
         self.assert_true(str(cm.exception).startswith(exc_msg))
 
     def test_load_from_zipfile_filename_not_found(self):
-        strm = NativeIO('w')
+        strm = BytesIO()
         zipf = zipfile.ZipFile(strm, 'w')
         zipf.writestr('foo.foo', '')
         zipf.close()
         colls = [get_root_collection(IMyEntity)]
-        colls = load_into_collections_from_zipfile(colls, strm)
+        load_into_collections_from_zipfile(colls, strm)
         self.assert_equal(len(colls[0]), 0)
 
 
@@ -256,6 +250,11 @@ class FileResourceIoTestCase(_ResourceIoTestCaseBase):
 
     def test_load_from_file(self):
         self._test_load(load_collection_from_file, lambda fn: fn, False)
+
+    def test_load_from_stream(self):
+        self._test_load(lambda rc, fn: load_collection_from_stream(rc, fn,
+                                                                   CsvMime),
+                        lambda fn: open(fn, 'rU'), False)
 
     def test_load_from_file_url(self):
         self._test_load(load_collection_from_url,

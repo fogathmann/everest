@@ -1,5 +1,5 @@
 """
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on May 18, 2011.
@@ -7,10 +7,15 @@ Created on May 18, 2011.
 from everest.testing import Pep8CompliantTestCase
 from everest.utils import BidirectionalLookup
 from everest.utils import WeakList
+from everest.utils import WeakOrderedSet
 from everest.utils import classproperty
 from everest.utils import get_traceback
 from everest.utils import id_generator
+from logging import StreamHandler
+from pyramid.compat import NativeIO
+import logging
 import random
+from everest.utils import TruncatingFormatter
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['UtilsTestCase',
@@ -59,12 +64,12 @@ class UtilsTestCase(Pep8CompliantTestCase):
         self.assert_equal(bl.pop_left('a'), 1)
         self.assert_false(bl.has_left('a'))
         self.assert_false(bl.has_right(1))
-        self.assert_equal(bl.left_keys(), ['b'])
-        self.assert_equal(bl.right_keys(), [2])
-        self.assert_equal(bl.left_values(), [2])
-        self.assert_equal(bl.right_values(), ['b'])
-        self.assert_equal(bl.left_items(), [('b', 2)])
-        self.assert_equal(bl.right_items(), [(2, 'b')])
+        self.assert_equal(list(bl.left_keys()), ['b'])
+        self.assert_equal(list(bl.right_keys()), [2])
+        self.assert_equal(list(bl.left_values()), [2])
+        self.assert_equal(list(bl.right_values()), ['b'])
+        self.assert_equal(list(bl.left_items()), [('b', 2)])
+        self.assert_equal(list(bl.right_items()), [(2, 'b')])
         self.assert_true('b' in bl)
         self.assert_true(2 in bl)
         self.assert_equal(bl['b'], 2)
@@ -179,3 +184,38 @@ class UtilsTestCase(Pep8CompliantTestCase):
         del obj_c1, obj_c2, obj_c3, obj_c4
         del obj_a, obj_c
         self.assertEqual(len(weak_list), 0)
+
+    def test_weak_ordered_set(self):
+        class MyObj(object):
+            def __init__(self, value):
+                self.value = value
+            def __eq__(self, other):
+                return self.value == other.value
+            def __hash__(self):
+                return hash(self.value)
+        values = [MyObj(val) for val in range(5)]
+        wos = WeakOrderedSet()
+        self.assert_raises(KeyError, wos.pop)
+        for value in values:
+            wos.add(value)
+        self.assert_equal(list(iter(wos)), values)
+        self.assert_equal(list(reversed(wos)), values[::-1])
+        self.assert_equal(len(wos), 5)
+        self.assert_equal(wos.pop(), values.pop())
+        self.assert_equal(len(wos), 4)
+        other_wos = WeakOrderedSet(values)
+        self.assert_equal(wos, other_wos)
+        self.assert_equal(wos, values)
+
+    def test_truncating_formatter(self):
+        buf = NativeIO()
+        logger = logging.Logger('test', logging.DEBUG)
+        hdlr = StreamHandler(buf)
+        hdlr.setFormatter(TruncatingFormatter())
+        logger.addHandler(hdlr)
+        logger.debug('%s', 'X' * 99, extra=dict(output_limit=100))
+        self.assert_equal(len(buf.getvalue().strip()), 99)
+        buf.seek(0)
+        buf.truncate()
+        logger.debug('%s', 'X' * 101, extra=dict(output_limit=100))
+        self.assert_equal(len(buf.getvalue().strip()), 100)

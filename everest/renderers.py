@@ -1,11 +1,13 @@
 """
 Renderers.
 
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created Oct 7, 2011.
 """
+from pyramid.interfaces import IRenderer
+
 from everest.mime import AtomMime
 from everest.mime import CsvMime
 from everest.mime import JsonMime
@@ -13,21 +15,24 @@ from everest.mime import XmlMime
 from everest.representers.utils import as_representer
 from everest.resources.interfaces import ICollectionResource
 from everest.resources.interfaces import IResource
-from pyramid.interfaces import IRenderer
 from zope.interface import implementer # pylint: disable=E0611,F0401
 from zope.interface import providedBy as provided_by # pylint: disable=E0611,F0401
+
 
 __docformat__ = "reStructuredText en"
 __all__ = ['AtomRenderer',
            'CsvRenderer',
            'JsonRenderer',
-           'XmlRenderer',
            'RendererFactory',
            'ResourceRenderer',
+           'XmlRenderer',
            ]
 
 
 class RendererFactory(object):
+    """
+    Factory for renderers based on names.
+    """
     def __init__(self, info):
         self.__name = info.name
 
@@ -47,7 +52,11 @@ class RendererFactory(object):
 
 @implementer(IRenderer)
 class ResourceRenderer(object):
+    """
+    Renderer for resources.
 
+    Uses a representer to perform the resource -> representation conversion.
+    """
     def __init__(self, content_type): # redef format pylint:disable=W0622
         self._content_type = content_type
 
@@ -58,7 +67,7 @@ class ResourceRenderer(object):
         self._prepare_response(system)
         # Assemble response.
         rpr = as_representer(context, self._content_type)
-        return rpr.to_string(context)
+        return rpr.to_bytes(context)
 
     @property
     def _format(self):
@@ -69,11 +78,14 @@ class ResourceRenderer(object):
 
     def _prepare_response(self, system):
         # Set up response type.
-        request = system['request']
-        request.response.content_type = self._format
+        rsp = system['request'].response
+        rsp.content_type = self._format
 
 
 class CsvRenderer(ResourceRenderer):
+    """
+    Renderer creating a CSV representation from a resource.
+    """
     def __init__(self):
         ResourceRenderer.__init__(self, CsvMime)
 
@@ -86,17 +98,24 @@ class CsvRenderer(ResourceRenderer):
 
 
 class JsonRenderer(ResourceRenderer):
+    """
+    Renderer creating a JSON representation from a resource.
+    """
     def __init__(self):
         ResourceRenderer.__init__(self, JsonMime)
 
 
 class XmlRenderer(ResourceRenderer):
+    """
+    Renderer creating a XML representation from a resource.
+    """
     def __init__(self):
         ResourceRenderer.__init__(self, XmlMime)
 
 
 class AtomRenderer(ResourceRenderer):
+    """
+    Renderer creating an ATOM representation from a resource.
+    """
     def __init__(self):
         ResourceRenderer.__init__(self, AtomMime)
-
-

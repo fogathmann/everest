@@ -6,8 +6,13 @@ See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Jun 22, 2011.
 """
+from everest.constants import RequestMethods
 from everest.entities.interfaces import IEntity
 from everest.entities.system import UserMessage
+from everest.entities.traversal import DomainDataTraversalProxyAdapter
+from everest.entities.traversal import LinkedDomainDataTraversalProxyAdapter
+from everest.interfaces import IDataTraversalProxyAdapter
+from everest.interfaces import IDataTraversalProxyFactory
 from everest.interfaces import IResourceUrlConverter
 from everest.interfaces import IUserMessage
 from everest.interfaces import IUserMessageNotifier
@@ -25,20 +30,28 @@ from everest.querying.specifications import OrderSpecificationFactory
 from everest.renderers import RendererFactory
 from everest.repositories.constants import REPOSITORY_DOMAINS
 from everest.repositories.constants import REPOSITORY_TYPES
+from everest.repositories.filesystem.repository import FileSystemRepository
 from everest.repositories.interfaces import IRepository
 from everest.repositories.interfaces import IRepositoryManager
 from everest.repositories.manager import RepositoryManager
 from everest.repositories.memory import ObjectFilterSpecificationVisitor
 from everest.repositories.memory import ObjectOrderSpecificationVisitor
+from everest.repositories.memory.repository import MemoryRepository
 from everest.repositories.rdb import SqlFilterSpecificationVisitor
 from everest.repositories.rdb import SqlOrderSpecificationVisitor
+from everest.repositories.rdb.repository import RdbRepository
 from everest.representers.atom import AtomResourceRepresenter
 from everest.representers.base import MappingResourceRepresenter
-from everest.representers.base import RepresenterRegistry
 from everest.representers.csv import CsvResourceRepresenter
+from everest.representers.interfaces import ICollectionDataElement
+from everest.representers.interfaces import ILinkedDataElement
+from everest.representers.interfaces import IMemberDataElement
 from everest.representers.interfaces import IRepresenterRegistry
 from everest.representers.json import JsonResourceRepresenter
+from everest.representers.registry import RepresenterRegistry
+from everest.representers.traversal import DataElementDataTraversalProxyAdapter
 from everest.representers.xml import XmlResourceRepresenter
+from everest.resources.attributes import resource_attributes_injector
 from everest.resources.base import Collection
 from everest.resources.base import Resource
 from everest.resources.interfaces import ICollectionResource
@@ -48,11 +61,13 @@ from everest.resources.interfaces import IService
 from everest.resources.service import Service
 from everest.resources.system import UserMessageMember
 from everest.resources.utils import provides_member_resource
+from everest.traversal import DataTraversalProxyFactory
 from everest.url import ResourceUrlConverter
 from everest.views.base import RepresentingResourceView
 from everest.views.deletemember import DeleteMemberView
 from everest.views.getcollection import GetCollectionView
 from everest.views.getmember import GetMemberView
+from everest.views.patchmember import PatchMemberView
 from everest.views.postcollection import PostCollectionView
 from everest.views.putmember import PutMemberView
 from pyramid.compat import iteritems_
@@ -70,7 +85,6 @@ from zope.interface import alsoProvides as also_provides # pylint: disable=E0611
 from zope.interface import classImplements as class_implements # pylint: disable=E0611,F0401
 from zope.interface import providedBy as provided_by # pylint: disable=E0611,F0401
 from zope.interface.interfaces import IInterface # pylint: disable=E0611,F0401
-#from pyramid.configuration import Configurator as PyramidConfigurator
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['Configurator',
@@ -150,6 +164,19 @@ class Configurator(PyramidConfigurator):
         """
         return self.registry.queryUtility(*args, **kw) # pylint: disable=E1103
 
+    def get_configuration_from_settings(self, setting_info):
+        """
+        Returns a dictionary with configuration names as keys and setting
+        values extracted from this configurator's settings as values.
+
+        :param setting_info: Sequence of 2-tuples containing the configuration
+          name as the first and the setting name as the second element.
+        """
+        settings = self.get_settings()
+        return dict([(name, settings.get(key))
+                     for (name, key) in setting_info
+                     if not settings.get(key, None) is None])
+
     def setup_registry(self,
                        filter_specification_factory=None,
                        order_specification_factory=None,
@@ -203,15 +230,33 @@ class Configurator(PyramidConfigurator):
                                     eval_order_specification_visitor,
                url_converter=url_converter)
 
+    def add_repository(self, name, repository_type, repository_class,
+                       aggregate_class, make_default, configuration):
+        """
+        Generic method for adding a repository.
+        """
+        repo_mgr = self.get_registered_utility(IRepositoryManager)
+        if name is None:
+            # If no name was given, this is assumed to be the ROOT repository
+            # for the given repository type.
+            name = REPOSITORY_DOMAINS.ROOT
+        repo = repo_mgr.new(repository_type, name=name,
+                            make_default=make_default,
+                            repository_class=repository_class,
+                            aggregate_class=aggregate_class,
+                            configuration=configuration)
+        repo_mgr.set(repo)
+
     def add_rdb_repository(self, name=None, repository_class=None,
                            aggregate_class=None,
                            make_default=False, configuration=None, _info=u''):
         if configuration is None:
             configuration = {}
         setting_info = [('db_string', 'db_string')]
-        configuration.update(self.__cnf_from_settings(setting_info))
-        self.__add_repository(name, REPOSITORY_TYPES.RDB, repository_class,
-                              aggregate_class, make_default, configuration)
+        configuration.update(
+                        self.get_configuration_from_settings(setting_info))
+        self.add_repository(name, REPOSITORY_TYPES.RDB, repository_class,
+                            aggregate_class, make_default, configuration)
 
     def add_filesystem_repository(self, name=None, repository_class=None,
                                   aggregate_class=None,
@@ -221,10 +266,11 @@ class Configurator(PyramidConfigurator):
             configuration = {}
         setting_info = [('directory', 'fs_directory'),
                         ('content_type', 'fs_contenttype')]
-        configuration.update(self.__cnf_from_settings(setting_info))
-        self.__add_repository(name, REPOSITORY_TYPES.FILE_SYSTEM,
-                              repository_class, aggregate_class,
-                              make_default, configuration)
+        configuration.update(
+                        self.get_configuration_from_settings(setting_info))
+        self.add_repository(name, REPOSITORY_TYPES.FILE_SYSTEM,
+                            repository_class, aggregate_class,
+                            make_default, configuration)
 
     def add_memory_repository(self, name=None, repository_class=None,
                               aggregate_class=None,
@@ -232,12 +278,17 @@ class Configurator(PyramidConfigurator):
                               _info=u''):
         if configuration is None:
             configuration = {}
-        self.__add_repository(name, REPOSITORY_TYPES.MEMORY, repository_class,
-                              aggregate_class, make_default, configuration)
+        self.add_repository(name, REPOSITORY_TYPES.MEMORY, repository_class,
+                            aggregate_class, make_default, configuration)
 
     def setup_system_repository(self, repository_type, reset_on_start=False):
         repo_mgr = self.get_registered_utility(IRepositoryManager)
-        repo_mgr.setup_system_repository(repository_type, reset_on_start)
+        # We have to pass the repository class explicitly as the repo
+        # manager can not use the registry (yet).
+        repo_cls = self.get_registered_utility(IRepository,
+                                               name=repository_type)
+        repo_mgr.setup_system_repository(repository_type, reset_on_start,
+                                         repository_class=repo_cls)
         self.add_resource(IUserMessage, UserMessageMember, UserMessage,
                           repository=REPOSITORY_DOMAINS.SYSTEM,
                           collection_root_name='_messages')
@@ -354,12 +405,17 @@ class Configurator(PyramidConfigurator):
         self._register_utility(collection, IRelation,
                                name=collection.relation)
         # Register the resource with the repository.
-        repo.register_resource(interface)
+        repo.register_resource(collection)
         # Register adapter implementing interface -> repository.
         self._register_adapter(lambda obj: repo,
                                required=(interface,),
                                provided=IRepository,
                                info=_info)
+        # Install an attribute injector in the entity class. This will, on
+        # first access, replace the __everest_attributes__ class attribute
+        # with an ordered dictionary mapping entity attribute names to
+        # resource descriptors.
+        entity.__everest_attributes__ = resource_attributes_injector()
         # Expose (=register with the service) if requested.
         if expose:
             srvc = self.query_registered_utilities(IService)
@@ -417,8 +473,10 @@ class Configurator(PyramidConfigurator):
             rpr_reg.register(rc, content_type, configuration=rpr_config)
 
     def add_resource_view(self, resource, view=None, name='', renderer=None,
-                          request_method=('GET',), default_content_type=None,
-                          default_response_content_type=None, **kw):
+                          request_method=(RequestMethods.GET,),
+                          default_content_type=None,
+                          default_response_content_type=None,
+                          enable_messaging=None, **kw):
         # FIXME: We should not allow **kw to support setting up standard
         #        views here since some options may have undesired side
         #        effects.
@@ -436,7 +494,8 @@ class Configurator(PyramidConfigurator):
         for rc in rcs:
             self.__add_resource_view(rc, view, name, renderer, request_method,
                                      default_content_type,
-                                     default_response_content_type, kw)
+                                     default_response_content_type,
+                                     enable_messaging, kw)
 
     def add_collection_view(self, resource, **kw):
         if IInterface in provided_by(resource):
@@ -528,17 +587,32 @@ class Configurator(PyramidConfigurator):
                 sql_order_specification_visitor,
                 eval_order_specification_visitor,
                 url_converter):
+        # These are core initializations which should only be done once.
         if self.query_registered_utilities(IRepositoryManager) is None:
-            # These are core initializations which should only be done once.
+            # Set up the repository class utilities.
+            mem_repo_class = self.query_registered_utilities(
+                                    IRepository, name=REPOSITORY_TYPES.MEMORY)
+            if mem_repo_class is None:
+                self._register_utility(MemoryRepository, IRepository,
+                                       name=REPOSITORY_TYPES.MEMORY)
+                mem_repo_class = MemoryRepository
+            if self.query_registered_utilities(
+                    IRepository, name=REPOSITORY_TYPES.FILE_SYSTEM) is None:
+                self._register_utility(FileSystemRepository, IRepository,
+                                       name=REPOSITORY_TYPES.FILE_SYSTEM)
+            if self.query_registered_utilities(
+                    IRepository, name=REPOSITORY_TYPES.RDB) is None:
+                self._register_utility(RdbRepository, IRepository,
+                                       name=REPOSITORY_TYPES.RDB)
             # Set up the repository manager.
             repo_mgr = RepositoryManager()
             self._register_utility(repo_mgr, IRepositoryManager)
             self.add_subscriber(repo_mgr.on_app_created, IApplicationCreated)
             # Set up the root MEMORY repository and set it as the default
             # for all resources that do not specify a repository.
-            self.__add_repository(REPOSITORY_DOMAINS.ROOT,
-                                  REPOSITORY_TYPES.MEMORY,
-                                  None, None, True, None)
+            self.add_repository(REPOSITORY_DOMAINS.ROOT,
+                                REPOSITORY_TYPES.MEMORY,
+                                mem_repo_class, None, True, None)
             # Create representer registry and register builtin
             # representer classes.
             rpr_reg = RepresenterRegistry()
@@ -554,6 +628,22 @@ class Configurator(PyramidConfigurator):
             if not isinstance(rnd, RendererFactory):
                 PyramidConfigurator.add_renderer(self, reg_rnd_name,
                                                  RendererFactory)
+        # Register data traversal proxy factory and adapters.
+        trv_prx_fac = DataTraversalProxyFactory()
+        self._register_utility(trv_prx_fac, IDataTraversalProxyFactory)
+        self._register_adapter(DomainDataTraversalProxyAdapter,
+                               (IEntity,),
+                               IDataTraversalProxyAdapter)
+        self._register_adapter(DataElementDataTraversalProxyAdapter,
+                               (IMemberDataElement,),
+                               IDataTraversalProxyAdapter)
+        self._register_adapter(DataElementDataTraversalProxyAdapter,
+                               (ICollectionDataElement,),
+                               IDataTraversalProxyAdapter)
+        self._register_adapter(LinkedDomainDataTraversalProxyAdapter,
+                               (ILinkedDataElement,),
+                               IDataTraversalProxyAdapter)
+        #
         if not filter_specification_factory is None:
             self._set_filter_specification_factory(
                                                 filter_specification_factory)
@@ -582,29 +672,10 @@ class Configurator(PyramidConfigurator):
         if not url_converter is None:
             self._set_url_converter(url_converter)
 
-    def __add_repository(self, name, repo_type, repo_cls, agg_cls,
-                         make_default, cnf):
-        repo_mgr = self.get_registered_utility(IRepositoryManager)
-        if name is None:
-            # If no name was given, this is assumed to be the ROOT repository
-            # for the given repository type.
-            name = REPOSITORY_DOMAINS.ROOT
-        repo = repo_mgr.new(repo_type, name=name,
-                            make_default=make_default,
-                            repository_class=repo_cls,
-                            aggregate_class=agg_cls,
-                            configuration=cnf)
-        repo_mgr.set(repo)
-
-    def __cnf_from_settings(self, setting_info):
-        settings = self.get_settings()
-        return dict([(name, settings.get(key))
-                     for (name, key) in setting_info
-                     if not settings.get(key, None) is None])
-
     def __add_resource_view(self, rc, view, name, renderer, request_methods,
                             default_content_type,
-                            default_response_content_type, options):
+                            default_response_content_type,
+                            enable_messaging, options):
         for request_method in request_methods:
             opts = options.copy()
             vw = view
@@ -615,47 +686,57 @@ class Configurator(PyramidConfigurator):
                 kw = dict(default_content_type=default_content_type,
                           default_response_content_type=
                                     default_response_content_type,
+                          enable_messaging=enable_messaging,
                           convert_response=renderer is None)
                 if view is None:
                     # Attempt to guess a default view. We register a factory
                     # so we can pass additional constructor arguments.
                     if provides_member_resource(rc):
-                        if request_method == 'GET':
+                        if request_method == RequestMethods.GET:
                             vw = self.__make_view_factory(GetMemberView, kw)
-                        elif request_method == 'PUT':
+                        elif request_method == RequestMethods.PUT:
                             vw = self.__make_view_factory(PutMemberView, kw)
-                        elif request_method == 'DELETE':
+                        elif request_method == RequestMethods.PATCH:
+                            vw = self.__make_view_factory(PatchMemberView, kw)
+                        elif request_method == RequestMethods.DELETE:
                             # The DELETE view is special as it does not have
                             # to deal with representations.
                             vw = DeleteMemberView
                             register_sub_views = False
-                        elif request_method == 'FAKE_PUT':
-                            request_method = 'POST'
+                        elif request_method == RequestMethods.FAKE_PUT:
+                            request_method = RequestMethods.POST
                             opts['header'] = 'X-HTTP-Method-Override:PUT'
                             vw = self.__make_view_factory(PutMemberView, kw)
-                        elif request_method == 'FAKE_DELETE':
-                            request_method = 'POST'
+                        elif request_method == RequestMethods.FAKE_PATCH:
+                            request_method = RequestMethods.POST
+                            opts['header'] = 'X-HTTP-Method-Override:PATCH'
+                            vw = self.__make_view_factory(PatchMemberView, kw)
+                        elif request_method == RequestMethods.FAKE_DELETE:
+                            request_method = RequestMethods.POST
                             opts['header'] = 'X-HTTP-Method-Override:DELETE'
                             vw = DeleteMemberView
                             register_sub_views = False
                         else:
+                            mb_req_methods = [rm for rm in RequestMethods
+                                              if not rm == 'POST']
                             raise ValueError('Autodetection for member '
                                              'resource views requires '
-                                             '"GET", "PUT", "DELETE", '
-                                             '"FAKE_PUT", or "FAKE_DELETE" '
-                                             'as request method.')
+                                             'one of %s as request method.'
+                                             % str(mb_req_methods))
                     else:
-                        if request_method == 'GET':
+                        if request_method == RequestMethods.GET:
                             vw = \
                               self.__make_view_factory(GetCollectionView, kw)
-                        elif request_method == 'POST':
+                        elif request_method == RequestMethods.POST:
                             vw = \
                               self.__make_view_factory(PostCollectionView, kw)
                         else:
+                            coll_req_methods = [RequestMethods.GET,
+                                                RequestMethods.POST]
                             raise ValueError('Autodetection for collectioon '
                                              'resource views requires '
-                                             '"GET" or "POST" '
-                                             'as request method.')
+                                             'one of %s as request method.'
+                                             % str(coll_req_methods))
                 else:
                     vw = self.__make_view_factory(view, kw)
             else:

@@ -1,17 +1,16 @@
 """
 Custom querying operators.
 
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Dec 5, 2011.
 """
-from everest.querying.base import BinaryOperator
-from everest.querying.base import UnaryOperator
 from pyramid.compat import string_types
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['ASCENDING',
+           'BinaryOperator',
            'CONJUNCTION',
            'CONTAINED',
            'CONTAINS',
@@ -27,8 +26,55 @@ __all__ = ['ASCENDING',
            'LESS_OR_EQUALS',
            'LESS_THAN',
            'NEGATION',
+           'NullaryOperator',
+           'Operator',
            'STARTS_WITH',
+           'UnaryOperator',
            ]
+
+
+class Operator(object):
+    """
+    Base class for querying operators.
+    """
+    #: The name of the operator. To be specified in derived classes.
+    name = None
+    #: The arity (number of arguments required) of the operator. To be
+    #: specified in derived classes.
+    arity = None
+
+
+class NullaryOperator(Operator):
+    """
+    Nullary querying operator.
+    """
+    arity = 0
+
+    @staticmethod
+    def apply():
+        raise NotImplementedError('Abstract method.')
+
+
+class UnaryOperator(Operator):
+    """
+    Unary querying operator.
+    """
+    arity = 1
+
+    @staticmethod
+    def apply(value):
+        raise NotImplementedError('Abstract method.')
+
+
+class BinaryOperator(Operator):
+    """
+    Binary querying operator.
+    """
+    arity = 2
+
+    @staticmethod
+    def apply(value, ref_value):
+        raise NotImplementedError('Abstract method.')
 
 
 class STARTS_WITH(BinaryOperator):
@@ -124,7 +170,7 @@ class ASCENDING(BinaryOperator):
 
     @staticmethod
     def apply(x, y):
-        return cmp(x, y)
+        return (x > y) - (x < y) # PY3 compatible cmp replacement.
 
 
 class DESCENDING(BinaryOperator):
@@ -132,7 +178,7 @@ class DESCENDING(BinaryOperator):
 
     @staticmethod
     def apply(x, y):
-        return cmp(y, x)
+        return (y > x) - (y < x) # PY3 compatible cmp replacement.
 
 
 class NEGATION(UnaryOperator):
@@ -163,7 +209,6 @@ class CQL_FILTER_OPERATORS(object):
     """
     Static container for all CQL filtering operators.
     """
-
     STARTS_WITH = STARTS_WITH
     ENDS_WITH = ENDS_WITH
     CONTAINED = CONTAINED
@@ -180,6 +225,5 @@ class CQL_ORDER_OPERATORS(object):
     """
     Static container for all CQL ordering operators.
     """
-
     ASCENDING = ASCENDING
     DESCENDING = DESCENDING

@@ -1,15 +1,15 @@
 """
 ZCML directives for everest.
 
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Jun 16, 2011.
 """
 from everest.configuration import Configurator
+from everest.constants import RESOURCE_KINDS
+from everest.constants import RequestMethods
 from everest.repositories.constants import REPOSITORY_TYPES
-from everest.representers.config import IGNORE_ON_READ_OPTION
-from everest.representers.config import IGNORE_ON_WRITE_OPTION
 from everest.representers.config import IGNORE_OPTION
 from everest.representers.config import WRITE_AS_LINK_OPTION
 from everest.representers.config import WRITE_MEMBERS_AS_LINK_OPTION
@@ -30,7 +30,16 @@ from zope.schema import Choice # pylint: disable=E0611,F0401
 from zope.schema import TextLine # pylint: disable=E0611,F0401
 
 __docformat__ = 'reStructuredText en'
-__all__ = ['RESOURCE_KINDS',
+__all__ = ['IFileSystemRepositoryDirective',
+           'IMemoryRepositoryDirective',
+           'IMessagingDirective',
+           'IOptionDirective',
+           'IRdbRepositoryDirective',
+           'IRepositoryDirective',
+           'IRepresenterDirective',
+           'IResourceDirective',
+           'IResourceRepresenterAttributeDirective',
+           'IRepresenterDirective',
            'RepresenterDirective',
            'ResourceDirective',
            'ResourceRepresenterAttributeDirective',
@@ -130,7 +139,8 @@ def filesystem_repository(_context, name=None, make_default=False,
         cnf['content_type'] = content_type
     _repository(_context, name, make_default,
                 aggregate_class, repository_class,
-                REPOSITORY_TYPES.FILE_SYSTEM, 'add_filesystem_repository', cnf)
+                REPOSITORY_TYPES.FILE_SYSTEM, 'add_filesystem_repository',
+                cnf)
 
 
 class IRdbRepositoryDirective(IRepositoryDirective):
@@ -175,7 +185,7 @@ def messaging(_context, repository, reset_on_start=False):
     """
     Directive for setting up the user message resource in the appropriate
     repository.
-    
+
     :param str repository: The repository to create the user messages resource
       in.
     """
@@ -273,9 +283,9 @@ class ResourceDirective(GroupingContextDecorator):
         for key, value in iteritems_(self.representers):
             cnt_type, rc_kind = key
             opts, mp_opts = value
-            if rc_kind == RESOURCE_KINDS.member:
+            if rc_kind == RESOURCE_KINDS.MEMBER:
                 rc = get_member_class(self.interface)
-            elif rc_kind == RESOURCE_KINDS.collection:
+            elif rc_kind == RESOURCE_KINDS.COLLECTION:
                 rc = get_collection_class(self.interface)
             else: # None
                 rc = self.interface
@@ -290,13 +300,15 @@ class ResourceDirective(GroupingContextDecorator):
 
 
 def _resource_view(_context, for_, default_content_type,
-                   default_response_content_type, config_callable_name, kw):
+                   default_response_content_type, enable_messaging,
+                   config_callable_name, kw):
     reg = get_current_registry()
     config = Configurator(reg, package=_context.package)
     config_callable = getattr(config, config_callable_name)
     option_tuples = tuple(sorted([(k, str(v)) for (k, v) in kw.items()]))
     kw['default_content_type'] = default_content_type
     kw['default_response_content_type'] = default_response_content_type
+    kw['enable_messaging'] = enable_messaging
     for rc in for_:
         discriminator = ('resource_view', rc, config_callable_name) \
                         + option_tuples
@@ -332,29 +344,41 @@ class IResourceViewDirective(IViewDirective):
     request_method = \
         Tokens(title=u"One or more request methods that need to be matched.",
                required=True,
-               value_type=Choice(values=('GET', 'POST', 'PUT', 'DELETE',
-                                         'FAKE_PUT', 'FAKE_DELETE'),
-                                 default='GET',
+               value_type=Choice(values=tuple(RequestMethods),
+                                 default=RequestMethods.GET,
                                  ),
                )
+    enable_messaging = \
+        Bool(title=u"Flag indicating if messaging should be enabled for "
+                    "this view (defaults to False for GET views and to "
+                    "TRUE for PUT/POST/PATCH views).",
+             default=None,
+             required=False,
+             )
 
 
 def resource_view(_context, for_, default_content_type=None,
-                  default_response_content_type=None, **kw):
+                  default_response_content_type=None, enable_messaging=None,
+                  **kw):
     _resource_view(_context, for_, default_content_type,
-                   default_response_content_type, 'add_resource_view', kw)
+                   default_response_content_type, enable_messaging,
+                   'add_resource_view', kw)
 
 
 def collection_view(_context, for_, default_content_type=None,
-                    default_response_content_type=None, **kw):
+                    default_response_content_type=None,
+                    enable_messaging=None, **kw):
     _resource_view(_context, for_, default_content_type,
-                   default_response_content_type, 'add_collection_view', kw)
+                   default_response_content_type, enable_messaging,
+                   'add_collection_view', kw)
 
 
 def member_view(_context, for_, default_content_type=None,
-                default_response_content_type=None, **kw):
+                default_response_content_type=None, enable_messaging=None,
+             **kw):
     _resource_view(_context, for_, default_content_type,
-                   default_response_content_type, 'add_member_view', kw)
+                   default_response_content_type, enable_messaging,
+                   'add_member_view', kw)
 
 
 class IRepresenterDirective(Interface):
@@ -393,17 +417,13 @@ class RepresenterDirective(GroupingContextDecorator):
                                options=self.options)
 
 
-class RESOURCE_KINDS(object):
-    member = 'member'
-    collection = 'collection'
-
-
 class IResourceRepresenterDirective(Interface):
     content_type = \
         GlobalObject(title=u"The (MIME) content type the representer manages.",
                      required=True)
     kind = \
-        Choice(values=(RESOURCE_KINDS.member, RESOURCE_KINDS.collection),
+        Choice(values=(RESOURCE_KINDS.MEMBER.lower(),
+                       RESOURCE_KINDS.COLLECTION.lower()),
                title=u"Specifies the kind of resource the representer should "
                       "be used for ('member' or 'collection'). If this is "
                       "not provided, the representer is used for both "
@@ -414,7 +434,7 @@ class IResourceRepresenterDirective(Interface):
 @implementer(IConfigurationContext, IResourceRepresenterDirective)
 class ResourceRepresenterDirective(GroupingContextDecorator):
     """
-    Grouping directive for registering a representer for a given resource(s) 
+    Grouping directive for registering a representer for a given resource(s)
     and content type combination. Delegates the work to a
     :class:`everest.configuration.Configurator`.
     """
@@ -422,6 +442,8 @@ class ResourceRepresenterDirective(GroupingContextDecorator):
     def __init__(self, context, content_type, kind=None):
         self.context = context
         self.content_type = content_type
+        if not kind is None:
+            kind = kind.upper()
         self.kind = kind
         self.options = {}
         self.attribute_options = {}
@@ -471,8 +493,7 @@ def option(_context, name, value, type=None): # pylint: disable=W0622
     if not type is None:
         field = type()
         value = field.fromUnicode(value)
-    elif name in (IGNORE_OPTION, IGNORE_ON_READ_OPTION,
-                  IGNORE_ON_WRITE_OPTION, WRITE_AS_LINK_OPTION,
+    elif name in (IGNORE_OPTION, WRITE_AS_LINK_OPTION,
                   WRITE_MEMBERS_AS_LINK_OPTION):
         field = Bool()
         value = field.fromUnicode(value)

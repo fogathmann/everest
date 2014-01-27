@@ -1,5 +1,5 @@
 """
-This file is part of the everest project. 
+This file is part of the everest project.
 See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Jun 1, 2012.
@@ -11,8 +11,8 @@ from everest.mime import CsvMime
 from everest.repositories.constants import REPOSITORY_TYPES
 from everest.repositories.memory import Aggregate
 from everest.repositories.memory import Repository
-from everest.resources.io import get_collection_name
-from everest.resources.io import get_read_collection_path
+from everest.resources.storing import get_collection_name
+from everest.resources.storing import get_read_collection_path
 from everest.resources.staging import create_staging_collection
 from everest.resources.utils import get_collection_class
 from everest.resources.utils import get_root_collection
@@ -34,14 +34,15 @@ import os
 import shutil
 import tempfile
 import transaction
+from everest.utils import classproperty
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['BasicRepositoryTestCase',
-           'MemorySystemRepositoryTestCase',
-           'RdbSystemRepositoryTestCase',
-           'RepositoryTestCase',
            'FileSystemEmptyRepositoryTestCase',
            'FileSystemRepositoryTestCase',
+           'MemorySystemRepositoryTestCase',
+           'RdbSystemRepositoryTestCase',
+           'RepositoryManagerTestCase',
            ]
 
 
@@ -52,7 +53,7 @@ class BasicRepositoryTestCase(Pep8CompliantTestCase):
                            autocommit=True, join_transaction=True)
 
 
-class RepositoryTestCase(ResourceTestCase):
+class RepositoryManagerTestCase(ResourceTestCase):
     package_name = 'everest.tests.complete_app'
     config_file_name = 'configure_no_rdb.zcml'
 
@@ -79,8 +80,8 @@ class RepositoryTestCase(ResourceTestCase):
         self.assert_raises(ValueError, repo_mgr.set, repo)
         with self.assert_raises(ValueError) as cm:
             repo_mgr.new('foo', 'bar')
-        exc_msg = 'Unknown repository type.'
-        self.assert_equal(str(cm.exception), exc_msg)
+        exc_msg = 'Unknown repository type'
+        self.assert_true(str(cm.exception).startswith(exc_msg))
 
     def test_set_collection_parent_fails(self):
         self.config.add_resource(IFoo, FooMember, FooEntity, expose=False)
@@ -101,12 +102,15 @@ class _SystemRepositoryBaseTestCase(ResourceTestCase):
         txt = 'user message.'
         msg = UserMessage(txt)
         agg.add(msg)
-        self.assert_is_not_none(msg.id)
         txt1 = 'user message 1.'
-        msg1 = UserMessage(txt1)
-        agg.update(msg, msg1)
-        self.assert_equal(msg.text, txt1)
-        agg.remove(msg)
+        msg1 = UserMessage(txt1, id=msg.id)
+        self.assert_equal(msg1.id, msg.id)
+        msg2 = agg.update(msg1)
+        self.assert_equal(msg2.id, msg1.id)
+        self.assert_equal(msg2.text, txt1)
+        msg3 = agg.get_by_id(msg.id)
+        self.assert_equal(msg3.text, txt1)
+        agg.remove(msg3)
         self.assert_equal(len(list(agg.iterator())), 0)
 
 
@@ -120,67 +124,10 @@ class RdbSystemRepositoryTestCase(_SystemRepositoryBaseTestCase):
         self.config.setup_system_repository(REPOSITORY_TYPES.RDB)
 
 
-class _FileSystemRepositoryTestCaseMixin(object):
-    _data_dir = None
-    package_name = 'everest.tests.complete_app'
-    config_file_name = 'configure_fs.zcml'
-
-    def _set_data_dir(self):
-        self._data_dir = os.path.join(os.path.dirname(__file__),
-                                       'complete_app', 'data')
-
-
-class FileSystemEmptyRepositoryTestCase(_FileSystemRepositoryTestCaseMixin,
-                                        ResourceTestCase):
-    def set_up(self):
-        self._set_data_dir()
-        ResourceTestCase.set_up(self)
-
-    def test_initialization_with_empty_data_dir(self):
-        colls = [
-                 get_root_collection(IMyEntityParent),
-                 get_root_collection(IMyEntity),
-                 get_root_collection(IMyEntityChild),
-                 get_root_collection(IMyEntityGrandchild),
-                 ]
-        for coll in colls:
-            self.assert_equal(len(coll), 0)
-
-
-class FileSystemRepositoryTestCase(_FileSystemRepositoryTestCaseMixin,
-                                    ResourceTestCase):
-
-    def set_up(self):
-        self._set_data_dir()
-        self.__copy_data_files()
-        try:
-            ResourceTestCase.set_up(self)
-        except Exception:
-            self.__remove_data_files() # Always remove the copied files.
-            raise
-
-    def tear_down(self):
-        self.__remove_data_files()
-        transaction.abort()
-
-    def test_initialization(self):
-        colls = [
-                 get_root_collection(IMyEntityParent),
-                 get_root_collection(IMyEntity),
-                 get_root_collection(IMyEntityChild),
-                 get_root_collection(IMyEntityGrandchild),
-                 ]
-        for coll in colls:
-            self.assert_equal(len(coll), 1)
-
-    def test_get_read_collection_path(self):
-        path = get_read_collection_path(get_collection_class(IMyEntity),
-                                        CsvMime, directory=self._data_dir)
-        self.assert_false(path is None)
-        tmp_dir = tempfile.mkdtemp()
-        tmp_path = get_read_collection_path(get_collection_class(IMyEntity),
-                                            CsvMime, directory=tmp_dir)
-        self.assert_true(tmp_path is None)
+class RepositoryTestCaseBase(ResourceTestCase):
+    @classproperty
+    def __test__(cls):
+        return not cls is RepositoryTestCaseBase
 
     def test_add(self):
         coll = get_root_collection(IMyEntity)
@@ -214,39 +161,137 @@ class FileSystemRepositoryTestCase(_FileSystemRepositoryTestCaseMixin,
         ent = MyEntity(id=1)
         mb = MyEntityMember.create_from_entity(ent)
         coll.add(mb)
-        transaction.commit()
         coll.remove(mb)
-        transaction.commit()
         self.assert_equal(len(coll), 1)
 
-    def test_repeated_add_remove_same_member_no_id(self):
+    def test_add_commit_remove_same_member(self):
         coll = get_root_collection(IMyEntity)
         ent1 = MyEntity()
         mb1 = MyEntityMember.create_from_entity(ent1)
         coll.add(mb1)
         transaction.commit()
         self.assert_equal(len(coll), 2)
-        coll.remove(mb1)
-        transaction.commit()
-        self.assert_equal(len(coll), 1)
-        ent2 = MyEntity()
-        mb2 = MyEntityMember.create_from_entity(ent2)
-        coll.add(mb2)
-        transaction.commit()
-        self.assert_equal(len(coll), 2)
+        #
+        mb2 = coll[mb1.id]
         coll.remove(mb2)
         transaction.commit()
         self.assert_equal(len(coll), 1)
-        self.assert_not_equal(mb1.id, mb2.id)
 
     def test_remove_add_same_member(self):
         coll = get_root_collection(IMyEntity)
         mb = next(iter(coll))
         coll.remove(mb)
         transaction.commit()
+        # If we add the member with its parent or its children, we will get
+        # duplicate key errors.
+        ent = mb.get_entity()
+        ent.parent = None
+        # FIXME: The duplicate key error is actually *not* raised by the
+        #        file system repository when the following statement is
+        #        commented out!
+        while ent.children:
+            ent.children.pop()
         coll.add(mb)
         transaction.commit()
         self.assert_equal(len(coll), 1)
+
+    def test_rollback_add(self):
+        coll = get_root_collection(IMyEntity)
+        ent = MyEntity(id=2)
+        mb_add = MyEntityMember.create_from_entity(ent)
+        coll.add(mb_add)
+        self.assert_equal(len(coll), 2)
+        transaction.abort()
+        self.assert_equal(len(coll), 1)
+
+    def test_rollback_remove(self):
+        coll = get_root_collection(IMyEntity)
+        coll.remove(next(iter(coll)))
+        self.assert_equal(len(coll), 0)
+        transaction.abort()
+        self.assert_equal(len(coll), 1)
+
+    def test_rollback_modified(self):
+        coll = get_root_collection(IMyEntity)
+        mb = next(iter(coll))
+        orig_text = mb.text
+        new_text = 'CHANGED'
+        ent1 = MyEntity(id=0, text=new_text)
+        # FIXME: Right now, using .update is necessary to trigger a flush.
+        mb.update(ent1)
+        self.assert_equal(next(iter(coll)).text, new_text)
+        transaction.abort()
+        mb1 = next(iter(coll))
+        self.assert_equal(mb1.text, orig_text)
+
+    def test_failing_commit(self):
+        coll = get_root_collection(IMyEntity)
+        mb = next(iter(coll))
+        mb.id = None
+        self.assert_raises(ValueError, transaction.commit)
+
+
+class _FileSystemRepositoryTestCaseMixin(object):
+    _data_dir = None
+    package_name = 'everest.tests.complete_app'
+    config_file_name = 'configure_fs.zcml'
+
+    def _set_data_dir(self):
+        self._data_dir = os.path.join(os.path.dirname(__file__),
+                                      'complete_app', 'data')
+
+
+class FileSystemEmptyRepositoryTestCase(_FileSystemRepositoryTestCaseMixin,
+                                        ResourceTestCase):
+    def set_up(self):
+        self._set_data_dir()
+        ResourceTestCase.set_up(self)
+
+    def test_initialization_with_empty_data_dir(self):
+        colls = [
+                 get_root_collection(IMyEntityParent),
+                 get_root_collection(IMyEntity),
+                 get_root_collection(IMyEntityChild),
+                 get_root_collection(IMyEntityGrandchild),
+                 ]
+        for coll in colls:
+            self.assert_equal(len(coll), 0)
+
+
+class FileSystemRepositoryTestCase(_FileSystemRepositoryTestCaseMixin,
+                                   RepositoryTestCaseBase):
+
+    def set_up(self):
+        self._set_data_dir()
+        self.__copy_data_files()
+        try:
+            ResourceTestCase.set_up(self)
+        except Exception:
+            self.__remove_data_files() # Always remove the copied files.
+            raise
+
+    def tear_down(self):
+        self.__remove_data_files()
+        transaction.abort()
+
+    def test_initialization(self):
+        colls = [
+                 get_root_collection(IMyEntityParent),
+                 get_root_collection(IMyEntity),
+                 get_root_collection(IMyEntityChild),
+                 get_root_collection(IMyEntityGrandchild),
+                 ]
+        for coll in colls:
+            self.assert_equal(len(coll), 1)
+
+    def test_get_read_collection_path(self):
+        path = get_read_collection_path(get_collection_class(IMyEntity),
+                                        CsvMime, directory=self._data_dir)
+        self.assert_false(path is None)
+        tmp_dir = tempfile.mkdtemp()
+        tmp_path = get_read_collection_path(get_collection_class(IMyEntity),
+                                            CsvMime, directory=tmp_dir)
+        self.assert_true(tmp_path is None)
 
     def test_commit(self):
         coll = get_root_collection(IMyEntity)
@@ -259,23 +304,7 @@ class FileSystemRepositoryTestCase(_FileSystemRepositoryTestCaseMixin,
                   'rU') as data_file:
             lines = data_file.readlines()
         data = lines[1].split(',')
-        self.assert_equal(data[3], '"%s"' % TEXT)
-
-    def test_abort(self):
-        coll = get_root_collection(IMyEntity)
-        mb = next(iter(coll))
-        OLD_TEXT = mb.text
-        TEXT = 'Changed.'
-        mb.text = TEXT
-        transaction.abort()
-        old_mb = next(iter(coll))
-        self.assert_equal(old_mb.text, OLD_TEXT)
-
-    def test_failing_commit(self):
-        coll = get_root_collection(IMyEntity)
-        mb = next(iter(coll))
-        mb.id = None
-        self.assert_raises(ValueError, transaction.commit)
+        self.assert_equal(data[2], '"%s"' % TEXT)
 
     def test_configure(self):
         repo_mgr = get_repository_manager()

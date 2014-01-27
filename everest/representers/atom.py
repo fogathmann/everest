@@ -33,10 +33,12 @@ XML_PREFIX_ATOM = 'atom'
 
 
 class AtomResourceRepresenter(MappingResourceRepresenter):
-
+    """
+    Resource representer implementation for ATOM.
+    """
     content_type = AtomMime
 
-    def from_stream(self, stream):
+    def from_stream(self, stream, resource=None):
         # We do not support parsing ATOM representations.
         raise NotImplementedError('Not implemented.')
 
@@ -57,7 +59,6 @@ class AtomResourceRepresenter(MappingResourceRepresenter):
 
 
 class AtomMapping(Mapping):
-
     # FIXME: Make the hypermedia type configurable. pylint: disable=W0511
     VND_MIME = 'application/vnd.everest+xml'
 
@@ -159,7 +160,6 @@ class AtomMapping(Mapping):
 
 
 class AtomMappingRegistry(XmlMappingRegistry):
-
     NS_MAP = dict(opensearch=XML_NS_OPEN_SEARCH)
     mapping_class = AtomMapping
 
@@ -169,12 +169,12 @@ class AtomMappingRegistry(XmlMappingRegistry):
                          xml_ns=XML_NS_ATOM,
                          xml_prefix=XML_PREFIX_ATOM)
         mb_config = \
-            self.configuration_class(options=dict(atom_opts.items() +
+            self.configuration_class(options=dict(list(atom_opts.items()) +
                                                   [('xml_tag', 'entry')]))
         mb_mp = self.create_mapping(Member, mb_config)
         self.set_mapping(mb_mp)
         coll_config = \
-            self.configuration_class(options=dict(atom_opts.items() +
+            self.configuration_class(options=dict(list(atom_opts.items()) +
                                                   [('xml_tag', 'feed')]))
         coll_mp = self.create_mapping(Collection, coll_config)
         self.set_mapping(coll_mp)
@@ -187,7 +187,7 @@ class AtomMappingRegistry(XmlMappingRegistry):
         xml_ns_map = xml_mp_reg.namespace_map
         atom_ns_map.update(xml_ns_map)
         # Make ATOM namespace the default.
-        del atom_ns_map[XML_PREFIX_ATOM]
+        atom_ns_map.pop(XML_PREFIX_ATOM, None)
         atom_ns_map[None] = XML_NS_ATOM
         return atom_ns_map
 

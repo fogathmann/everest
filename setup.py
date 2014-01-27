@@ -17,20 +17,22 @@ README = open(os.path.join(here, 'README.rst')).read()
 
 setup_requirements = []
 
-install_requirements = open('requirements.txt', 'rU').readlines()
+install_requirements = \
+    open(os.path.join(here, 'requirements.txt'), 'rU').readlines()
 
 tests_requirements = install_requirements + [
     'nose-cov',
     'pytz',
     'webtest',
+    'mock'
     ]
 
 setup(name='everest',
-      version='thelma-16x',
+      version='thelma-17x',
       description='everest',
       long_description=README,
       classifiers=[
-        "Development Status :: 4 - Beta",
+        "Development Status :: 5 - Production/Stable",
         "Environment :: Web Environment",
         "Framework :: Pyramid",
         "Intended Audience :: Developers",

@@ -6,7 +6,7 @@ Created on Jun 1, 2012.
 """
 from everest.querying.utils import get_filter_specification_factory
 from everest.querying.utils import get_order_specification_factory
-from everest.repositories.rdb.utils import RdbTestCaseMixin
+from everest.repositories.rdb.testing import RdbTestCaseMixin
 from everest.resources.utils import get_root_collection
 from everest.resources.utils import resource_to_url
 from everest.resources.utils import url_to_resource
@@ -16,7 +16,7 @@ from everest.tests.complete_app.resources import MyEntityMember
 from everest.tests.complete_app.testing import create_collection
 from everest.tests.complete_app.testing import create_entity
 from pyramid.compat import urlparse
-
+from everest.utils import classproperty
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['RepoUrlTestCaseNoRdb',
@@ -24,7 +24,11 @@ __all__ = ['RepoUrlTestCaseNoRdb',
            ]
 
 
-class _UrlBaseTestCase(ResourceTestCase):
+class UrlTestCaseBase(ResourceTestCase):
+    @classproperty
+    def __test__(cls):
+        return not cls is UrlTestCaseBase
+
     package_name = 'everest.tests.complete_app'
 
     def set_up(self):
@@ -35,9 +39,9 @@ class _UrlBaseTestCase(ResourceTestCase):
 
     def test_resource_to_url_non_resource_object(self):
         ent = create_entity(entity_id=2)
-        with self.assert_raises(ValueError) as cm:
+        with self.assert_raises(TypeError) as cm:
             resource_to_url(ent)
-        exc_msg = 'Can not convert non-resource object'
+        exc_msg = 'Can not generate URL for non-resource'
         self.assert_true(str(cm.exception).startswith(exc_msg))
 
     def test_resource_to_url_floating_member(self):
@@ -45,7 +49,7 @@ class _UrlBaseTestCase(ResourceTestCase):
         mb = MyEntityMember.create_from_entity(ent)
         with self.assert_raises(ValueError) as cm:
             resource_to_url(mb)
-        exc_msg = 'Can not generate URL for floating member'
+        exc_msg = 'Can not generate URL for floating resource'
         self.assert_true(str(cm.exception).startswith(exc_msg))
 
     def test_resource_to_url_member(self):
@@ -81,7 +85,7 @@ class _UrlBaseTestCase(ResourceTestCase):
         self.coll.filter = flt_spec
         self.__check_url(resource_to_url(self.coll),
                          schema='http', path='/my-entities/', params='',
-                         query='q=parent:equal-to:%s' % parent_url)
+                         query="q=parent:equal-to:'%s'" % parent_url)
 
     def test_resource_to_url_with_order(self):
         ord_spec_fac = get_order_specification_factory()
@@ -185,8 +189,6 @@ class _UrlBaseTestCase(ResourceTestCase):
                     url_to_resource(self.base_url + '?q=%s' % criterion)
         mbs = list(coll_from_url)
         self.assert_equal(len(mbs), 2)
-        self.assert_equal(getattr(mbs[0], 'id'), 0)
-        self.assert_equal(getattr(mbs[1], 'id'), 1)
 
     def test_url_to_resource_with_order(self):
         coll_from_url = url_to_resource(self.base_url + '?sort=id:asc')
@@ -237,7 +239,8 @@ class _UrlBaseTestCase(ResourceTestCase):
 #        self.assert_equal(len(coll_from_url), 1)
 
     def test_url_to_resource_with_link_and_other(self):
-        criterion1 = 'parent:equal-to:"%s/my-entity-parents/0/"' % self.app_url
+        criterion1 = 'parent:equal-to:"%s/my-entity-parents/0/"' \
+                     % self.app_url
         criterion2 = 'id:equal-to:0'
         coll_from_url = url_to_resource(self.base_url +
                                         '?q=%s~%s' % (criterion1, criterion2))
@@ -245,7 +248,8 @@ class _UrlBaseTestCase(ResourceTestCase):
 
     def test_two_urls(self):
         par_url = self.app_url + '/my-entity-parents/'
-        criteria = 'parent:equal-to:"%s","%s"' % (par_url + '0/', par_url + '1/')
+        criteria = 'parent:equal-to:"%s","%s"' \
+                   % (par_url + '0/', par_url + '1/')
         url = self.base_url + '?q=%s' % criteria
         coll_from_url = url_to_resource(url)
         self.assert_equal(len(coll_from_url), 2)
@@ -297,12 +301,15 @@ class _UrlBaseTestCase(ResourceTestCase):
         if not params is None:
             self.assert_equal(urlp.params, params) # pylint: disable=E1101
         if not query is None:
-            self.assert_equal(urlp.query, query) # pylint: disable=E1101
+            # We can not rely on the order of query parameters returned by
+            # urlparse, so we compare the sets of parameters.
+            self.assert_equal(set(urlp.query.split('&')), # pylint: disable=E1101
+                              set(query.split('&')))
 
 
-class RepoUrlTestCaseNoRdb(_UrlBaseTestCase):
+class RepoUrlTestCaseNoRdb(UrlTestCaseBase):
     config_file_name = 'configure_no_rdb.zcml'
 
 
-class RepoUrlTestCaseRdb(RdbTestCaseMixin, _UrlBaseTestCase):
+class RepoUrlTestCaseRdb(RdbTestCaseMixin, UrlTestCaseBase):
     config_file_name = 'configure.zcml'

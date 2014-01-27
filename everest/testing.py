@@ -6,20 +6,17 @@ See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 
 Created on Nov 2, 2011.
 """
+from pyramid.compat import configparser
 from everest.configuration import Configurator
+from everest.constants import RequestMethods
 from everest.entities.utils import get_root_aggregate
 from everest.ini import EverestIni
-from everest.repositories.constants import REPOSITORY_TYPES
 from everest.repositories.interfaces import IRepositoryManager
-from everest.repositories.rdb.utils import Session
-from everest.repositories.utils import get_engine
 from everest.resources.interfaces import IService
 from everest.resources.staging import create_staging_collection
 from everest.resources.utils import get_root_collection
-from functools import update_wrapper
 from nose.tools import make_decorator
 from paste.deploy import loadapp # pylint: disable=E0611,F0401
-from pyramid.compat import iteritems_
 from pyramid.registry import Registry
 from pyramid.testing import DummyRequest
 from webtest import TestApp
@@ -33,16 +30,11 @@ __all__ = ['DummyContext',
            'DummyModule',
            'EntityTestCase',
            'FunctionalTestCase',
-           'RdbContextManager',
            'Pep8CompliantTestCase',
            'ResourceTestCase',
            'TestCaseWithConfiguration',
            'TestCaseWithIni',
-           'check_attributes',
            'elapsed',
-           'no_autoflush',
-           'persist',
-           'with_rdb',
            ]
 
 
@@ -50,7 +42,6 @@ class Pep8CompliantTestCase(unittest.TestCase):
     """
     Use this for simple unit tests with PEP8 compliant method names.
     """
-
     assert_true = unittest.TestCase.assertTrue
 
     assert_false = unittest.TestCase.assertFalse
@@ -88,10 +79,10 @@ class TestCaseWithIni(Pep8CompliantTestCase):
     """
     Use this for unit tests that need access to settings specified in an
     .ini file.
-    
-    :ivar ini: The ini file parser. This will only be set up if the 
-        `ini_file_path` and `ini_section_name` class variables were set up 
-        sensibly.  
+
+    :ivar ini: The ini file parser. This will only be set up if the
+        `ini_file_path` and `ini_section_name` class variables were set up
+        sensibly.
     """
     # : The name of the package where the tests reside. May be overridden in
     # : derived classes.
@@ -144,9 +135,12 @@ class BaseTestCaseWithConfiguration(TestCaseWithIni):
                                    package=self.package_name)
         if not self.ini_section_name is None:
             settings = self.ini.get_settings(self.ini_section_name)
-            self.config.setup_registry(settings=settings)
         else:
-            self.config.setup_registry()
+            try:
+                settings = self.ini.get_settings('DEFAULT')
+            except configparser.NoSectionError:
+                settings = None
+        self.config.setup_registry(settings=settings)
 
     def tear_down(self):
         super(BaseTestCaseWithConfiguration, self).tear_down()
@@ -168,7 +162,7 @@ class BaseTestCaseWithConfiguration(TestCaseWithIni):
 class TestCaseWithConfiguration(BaseTestCaseWithConfiguration):
     """
     Use this for test cases that need access to an initialized (but not
-    configured) registry. 
+    configured) registry.
     """
     def set_up(self):
         BaseTestCaseWithConfiguration.set_up(self)
@@ -179,8 +173,24 @@ class TestCaseWithConfiguration(BaseTestCaseWithConfiguration):
         BaseTestCaseWithConfiguration.tear_down(self)
 
 
+class EntityCreatorMixin(object):
+    """
+    Mixin class providing methods for test entity creation.
+    """
+    def _get_entity(self, icollection, key=None):
+        agg = get_root_aggregate(icollection)
+        if key is None:
+            agg.slice = slice(0, 1)
+            entity = list(agg.iterator())[0]
+        else:
+            entity = agg.get_by_slug(key)
+        return entity
 
-class EntityTestCase(BaseTestCaseWithConfiguration):
+    def _create_entity(self, entity_cls, data):
+        return entity_cls.create_from_data(data)
+
+
+class EntityTestCase(BaseTestCaseWithConfiguration, EntityCreatorMixin):
     """
     Use this for test cases that need access to a configured registry.
     """
@@ -198,20 +208,33 @@ class EntityTestCase(BaseTestCaseWithConfiguration):
         self.config.end()
         super(EntityTestCase, self).tear_down()
 
-    def _get_entity(self, icollection, key=None):
-        agg = get_root_aggregate(icollection)
+
+class ResourceCreatorMixin(EntityCreatorMixin):
+    """
+    Mixin class providing methods for test resource creation.
+    """
+    def _get_member(self, icollection, key=None):
         if key is None:
-            agg.slice = slice(0, 1)
-            entity = list(agg.iterator())[0]
+            coll = self._get_collection(icollection, slice(0, 1))
+            member = list(iter(coll))[0]
         else:
-            entity = agg.get_by_slug(key)
-        return entity
+            coll = get_root_collection(icollection)
+            member = coll.get(key)
+        return member
 
-    def _create_entity(self, entity_cls, data):
-        return entity_cls.create_from_data(data)
+    def _get_collection(self, icollection, slice_key=None):
+        if slice_key is None:
+            slice_key = slice(0, 10)
+        coll = get_root_collection(icollection)
+        coll.slice = slice_key
+        return coll
+
+    def _create_member(self, member_cls, entity):
+        coll = create_staging_collection(member_cls)
+        return coll.create_member(entity)
 
 
-class ResourceTestCase(BaseTestCaseWithConfiguration):
+class ResourceTestCase(BaseTestCaseWithConfiguration, ResourceCreatorMixin):
     """
     Use this for test cases that need access to a configured registry, a
     request object and a service object.
@@ -255,32 +278,31 @@ class ResourceTestCase(BaseTestCaseWithConfiguration):
         # is started.
         pass
 
-    def _get_member(self, icollection, key=None):
-        if key is None:
-            coll = self._get_collection(icollection, slice(0, 1))
-            member = list(iter(coll))[0]
-        else:
-            coll = get_root_collection(icollection)
-            member = coll.get(key)
-        return member
 
-    def _get_collection(self, icollection, slice_key=None):
-        if slice_key is None:
-            slice_key = slice(0, 10)
-        coll = get_root_collection(icollection)
-        coll.slice = slice_key
-        return coll
+class EverestTestApp(TestApp):
+    """
+    Testing WSGI application for everest.
+    """
+    def patch(self, url, params='', headers=None, extra_environ=None,
+            status=None, upload_files=None, expect_errors=False,
+            content_type=None):
+        """
+        Do a PATCH request. This uses the same machinery as the
+        :method:`put` method.
+        """
+        return self._gen_request(RequestMethods.PATCH,
+                                 url, params=params, headers=headers,
+                                 extra_environ=extra_environ, status=status,
+                                 upload_files=upload_files,
+                                 expect_errors=expect_errors,
+                                 content_type=content_type)
 
-    def _create_member(self, member_cls, entity):
-        coll = create_staging_collection(member_cls)
-        return coll.create_member(entity)
 
-
-class FunctionalTestCase(TestCaseWithIni):
+class FunctionalTestCase(TestCaseWithIni, ResourceCreatorMixin):
     """
     Use this for test cases that need access to a WSGI application.
-    
-    :ivar app: :class:`webtest.TestApp` instance wrapping our WSGI app to test. 
+
+    :ivar app: :class:`webtest.TestApp` instance wrapping our WSGI app to test.
     """
     # : The name of the application to test.
     app_name = None
@@ -292,7 +314,8 @@ class FunctionalTestCase(TestCaseWithIni):
         self.config = Configurator(registry=wsgiapp.registry,
                                    package=self.package_name)
         self.config.begin()
-        self.app = TestApp(wsgiapp,
+        self.app = \
+            EverestTestApp(wsgiapp,
                            extra_environ=self._create_extra_environment())
 
     def tear_down(self):
@@ -318,7 +341,6 @@ class DummyModule(object):
     """
     Dummy module for testing.
     """
-
     __path__ = "foo"
     __name__ = "dummy"
     __file__ = ''
@@ -328,7 +350,6 @@ class DummyContext:
     """
     Dummy context for testing.
     """
-
     def __init__(self, resolved=DummyModule):
         self.actions = []
         self.info = None
@@ -367,135 +388,11 @@ def elapsed(func):
     return make_decorator(func)(call_elapsed)
 
 
-def no_autoflush(scoped_session=None):
-    """
-    Decorator to disable autoflush on the session for the duration of a
-    test call. Uses the scoped session from the :mod:`everest.db` module
-    as default.
-
-    Adapted from
-    http://www.sqlalchemy.org/trac/wiki/UsageRecipes/DisableAutoflush
-    """
-    if scoped_session is None:
-        scoped_session = Session
-    def decorate(fn):
-        def wrap(*args, **kw):
-            session = scoped_session()
-            autoflush = session.autoflush
-            session.autoflush = False
-            try:
-                return fn(*args, **kw)
-            finally:
-                session.autoflush = autoflush
-        return update_wrapper(wrap, fn)
-    return decorate
-
-
-class RdbContextManager(object):
-    """
-    Context manager for RDB tests.
-    
-    Configures the entity repository to use the RDB implementation as
-    a default, sets up an outer transaction before the test is run and rolls
-    this transaction back after the test has finished.
-    """
-    def __init__(self, autoflush=True, engine_name=None):
-        self.__autoflush = autoflush
-        if engine_name is None:
-            # Use the name of the default RDB repository for engine lookup.
-            engine_name = REPOSITORY_TYPES.RDB
-        self.__engine_name = engine_name
-        self.__connection = None
-        self.__transaction = None
-        self.__session = None
-        self.__old_autoflush_flag = None
-
-    def __enter__(self):
-        # We set up an outer transaction that allows us to roll back all
-        # changes (including commits) the unittest may want to make.
-        engine = get_engine(self.__engine_name)
-        self.__connection = engine.connect()
-        self.__transaction = self.__connection.begin()
-        # Configure the autoflush behavior of the session.
-        self.__old_autoflush_flag = Session.autoflush # pylint:disable=E1101
-        Session.remove()
-        Session.configure(autoflush=self.__autoflush)
-        # Throw out the Zope transaction manager for testing.
-        Session.configure(extension=None)
-        # Create a new session for the tests.
-        self.__session = Session(bind=self.__connection)
-        return self.__session
-
-    def __exit__(self, ext_type, value, tb):
-        # Roll back the outer transaction and close the connection.
-        self.__session.close()
-        self.__transaction.rollback()
-        self.__connection.close()
-        # Remove the session we created.
-        Session.remove()
-        # Restore autoflush flag.
-        Session.configure(autoflush=self.__old_autoflush_flag)
-
-
-def with_rdb(autoflush=True, init_callback=None):
-    """
-    Decorator for tests which uses a :class:`RdbContextManager` for the
-    call to the decorated test function.
-    """
-    def decorate(func):
-        def wrap(*args, **kw):
-            with RdbContextManager(autoflush=autoflush,
-                                   init_callback=init_callback):
-                func(*args, **kw)
-        return update_wrapper(wrap, func)
-    return decorate
-
-
-def check_attributes(test_object, attribute_map):
-    """
-    Utility function to test whether the test object attributes match the
-    expected ones (given the dictionary).
-
-    :param test_object: a test object
-    :param attribute_map: a dictionary with key = attribute name
-            and value = expected value for this attribute
-    """
-    for attr_name, exp_val in iteritems_(attribute_map):
-        obj_val = getattr(test_object, attr_name)
-        if obj_val != exp_val:
-            raise AssertionError('Values for attribute %s differ!'
-                                 % attr_name)
-
-
-def persist(session, entity_class, attribute_map,
-            do_attribute_check=True):
-    """
-    Utility function which creates an object of the given class with the
-    given attribute map, commits it to the backend, reloads it from the
-    backend and then tests if the attributes compare equal.
-
-    :param entity_class: class inheriting from
-      :class:`everest.entities.base.Entity`
-    :param attribute_map: a dictionary containint attribute names as keys
-      and expected attribute values as values. The attribute map must
-      contain all mandatory attributes required for instantiation.
-    """
-    # Instantiate.
-    entity = entity_class(**attribute_map)
-    session.add(entity)
-    session.commit()
-    session.refresh(entity)
-    entity_id = entity.id
-    # Assure a new object is loaded to test if persisting worked.
-    session.expunge(entity)
-    del entity
-    query = session.query(entity_class)
-    fetched_entity = query.filter_by(id=entity_id).one()
-    if do_attribute_check:
-        check_attributes(fetched_entity, attribute_map)
-
-
 def tear_down_registry(registry):
+    """
+    Explicit un-registration of registered adapters and utilities for testing
+    puprposes.
+    """
     for reg_adp in list(registry.registeredAdapters()):
         registry.unregisterAdapter(factory=reg_adp.factory,
                                    required=reg_adp.required,
