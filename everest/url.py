@@ -24,6 +24,7 @@ from pyramid.traversal import find_resource
 from pyramid.traversal import traversal_path
 from zope.interface import implementer # pylint: disable=E0611,F0401
 from zope.interface import providedBy as provided_by # pylint: disable=E0611,F0401
+from everest.querying.refsparser import parse_refs
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['ResourceUrlConverter',
@@ -78,10 +79,12 @@ class ResourceUrlConverter(object):
             raise ValueError('Traversal found non-resource object "%s".' % rc)
         return rc
 
-    def resource_to_url(self, resource):
+    def resource_to_url(self, resource, quote=False):
         """
         Returns the URL for the given resource.
 
+        :param resource: Resource to create a URL for.
+        :param bool quote: If set, the URL returned will be quoted.
         :raises ValueError: If the given resource is floating (i.e., has
           the parent attribute set to `None`)
         """
@@ -131,7 +134,9 @@ class ResourceUrlConverter(object):
                 url = "%s%s/" % (par_url, resource.__name__)
             else:
                 url = self.__request.resource_url(resource)
-        return url_unquote(url)
+        if not quote:
+            url = url_unquote(url)
+        return url
 
 
 class UrlPartsConverter(object):
@@ -211,3 +216,14 @@ class UrlPartsConverter(object):
         start = slice_key.start
         size = slice_key.stop - start
         return (str(start), str(size))
+
+    @classmethod
+    def make_refs_options(cls, refs_string):
+        """
+        Converts the given CQL resource references string to a dictionary of
+        attribute representer options.
+        """
+        try:
+            return parse_refs(refs_string)
+        except ParseException as err:
+            raise ValueError('Refs string has errors. %s' % err)

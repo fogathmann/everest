@@ -54,12 +54,36 @@
         collection_root_name="my-entities"
     >
         <representer content_type='everest.mime.CsvMime'>
-            <ref attribute="children" kind="URL" />
+            <attribute name="children">
+                <option
+                    name="ignore"
+                    value="false"
+                    type="zope.configuration.fields.Bool" />
+                <option
+                    name="write_as_link"
+                    value="true"
+                    type="zope.configuration.fields.Bool" />
+            </attribute>
         </representer>
         <representer content_type="everest.mime.XmlMime">
-            <ref attribute="nested_parent" kind="OFF" />
-            <ref attribute="text_rc" kind="OFF" />
-            <ref attribute="parent_text" kind="OFF" />
+            <attribute name="nested_parent">
+                <option 
+                    name="ignore"
+                    value="true" 
+                    type="zope.configuration.fields.Bool" />
+            </attribute>
+            <attribute name="text_rc">
+                <option 
+                    name="ignore"
+                    value="true" 
+                    type="zope.configuration.fields.Bool" />
+            </attribute>
+            <attribute name="parent_text">
+                <option 
+                    name="ignore"
+                    value="true" 
+                    type="zope.configuration.fields.Bool" />
+            </attribute>
             <attribute name="parent">
                 <option
                     name="repr_name"
@@ -106,7 +130,12 @@
                     name="repr_name"
                     value="myentitygrandchildren" />
             </attribute>
-            <ref attribute="text_rc" kind="OFF" />
+            <attribute name="text_rc">
+                <option 
+                    name="ignore"
+                    value="true" 
+                    type="zope.configuration.fields.Bool" />
+            </attribute>
         </representer>
         <representer
             content_type="everest.mime.XmlMime"
@@ -137,7 +166,12 @@
                     name="repr_name"
                     value="myentitychild" />
             </attribute>
-            <ref attribute="text_rc" kind="OFF" />
+            <attribute name="text_rc">
+                <option
+                    name="ignore"
+                    value="true"
+                    type="zope.configuration.fields.Bool" />
+            </attribute>
         </representer>
         <representer
             content_type="everest.mime.XmlMime"
