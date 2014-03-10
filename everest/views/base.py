@@ -235,16 +235,38 @@ class RepresentingResourceView(ResourceView): # still abstract pylint: disable=W
           passed on to a custom renderer).
         """
         if self._convert_response:
-            rpr = self._get_response_representer()
-            # Set content type and body of the response.
-            self.request.response.content_type = \
-                                    rpr.content_type.mime_type_string
-            rpr_body = rpr.to_bytes(resource)
-            self.request.response.body = rpr_body
+            self._update_response_body(resource)
             result = self.request.response
         else:
             result = dict(context=resource)
         return result
+
+    def _update_response_body(self, resource):
+        """
+        Creates a representer and updates the response body with the byte
+        representation created for the given resource.
+        """
+        rpr = self._get_response_representer()
+        # Set content type and body of the response.
+        self.request.response.content_type = \
+                                rpr.content_type.mime_type_string
+        rpr_body = rpr.to_bytes(resource)
+        self.request.response.body = rpr_body
+
+    def _update_response_location_header(self, resource):
+        """
+        Adds a new or replaces an existing Location header to the response
+        headers pointing to the URL of the given resource.
+        """
+        location = resource_to_url(resource, request=self.request)
+        loc_hdr = ('Location', location)
+        hdr_names = [hdr[0].upper() for hdr in self.request.response.headerlist]
+        try:
+            idx = hdr_names.index('LOCATION')
+        except ValueError:
+            self.request.response.headerlist.append(loc_hdr)
+        else:
+            self.request.response.headerlist[idx] = loc_hdr
 
     def __get_default_response_mime_type(self):
         if not self._default_response_content_type is None:
@@ -296,7 +318,7 @@ class GetResourceView(RepresentingResourceView): # still abstract pylint: disabl
     def _prepare_resource(self):
         raise NotImplementedError('Abstract method.')
 
-    def _get_result(self, resource):
+    def _update_response_body(self, resource):
         """
         Extends the base class method with links options processing.
         """
@@ -306,10 +328,9 @@ class GetResourceView(RepresentingResourceView): # still abstract pylint: disabl
                                         type(self.context),
                                         self._get_response_mime_type(),
                                         attribute_options=links_options):
-                result = RepresentingResourceView._get_result(self, resource)
+                RepresentingResourceView._update_response_body(self, resource)
         else:
-            result = RepresentingResourceView._get_result(self, resource)
-        return result
+            RepresentingResourceView._update_response_body(self, resource)
 
     def __configure_refs(self):
         refs_options_string = self.request.params.get('refs')
@@ -451,11 +472,9 @@ class PutOrPatchResourceView(ModifyingResourceView):
         self.context.update(data)
         current_name = self.context.__name__
         self.request.response.status = self._status(HTTPOk)
-        # FIXME: add conflict detection
         if initial_name != current_name:
-            self.request.response.headerlist = \
-                [('Location',
-                  resource_to_url(self.context, request=self.request))]
+            # FIXME: add conflict detection!
+            self._update_response_location_header(self.context)
         # We return the (representation of) the updated member to
         # assist the client in doing the right thing (some clients block
         # access to the Response headers so we may not be able to find the

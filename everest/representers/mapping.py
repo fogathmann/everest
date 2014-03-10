@@ -7,6 +7,10 @@ See LICENSE.txt for licensing, CONTRIBUTORS.txt for contributor information.
 Created on May 4, 2012.
 """
 from collections import OrderedDict
+
+from pyramid.compat import iteritems_
+from pyramid.compat import itervalues_
+
 from everest.constants import RESOURCE_ATTRIBUTE_KINDS
 from everest.representers.attributes import MappedAttribute
 from everest.representers.attributes import MappedAttributeKey
@@ -27,9 +31,8 @@ from everest.resources.staging import create_staging_collection
 from everest.resources.utils import get_collection_class
 from everest.resources.utils import provides_collection_resource
 from everest.resources.utils import provides_member_resource
-from pyramid.compat import iteritems_
-from pyramid.compat import itervalues_
 from zope.interface import providedBy as provided_by # pylint: disable=E0611,F0401
+
 
 __docformat__ = 'reStructuredText en'
 __all__ = ['Mapping',
@@ -70,6 +73,10 @@ class Mapping(object):
         """
         Returns a clone of this mapping that is configured with the given
         option and attribute option dictionaries.
+
+        :param dict options: Maps representer options to their values.
+        :param dict attribute_options: Maps attribute names to dictionaries
+          mapping attribute options to their values.
         """
         copied_cfg = self.__configurations[-1].copy()
         upd_cfg = type(copied_cfg)(options=options,
@@ -81,7 +88,18 @@ class Mapping(object):
     def update(self, options=None, attribute_options=None):
         """
         Updates this mapping with the given option and attribute option maps.
+
+        :param dict options: Maps representer options to their values.
+        :param dict attribute_options: Maps attribute names to dictionaries
+          mapping attribute options to their values.
         """
+        attr_map = self.__get_attribute_map(self.__mapped_cls, None)
+        for attributes in attribute_options:
+            for attr_name in attributes:
+                if not attr_name in attr_map:
+                    raise AttributeError('Trying to configure non-existing '
+                                         'resource attribute "%s"'
+                                         % (attr_name))
         cfg = RepresenterConfiguration(options=options,
                                        attribute_options=attribute_options)
         self.configuration.update(cfg)
@@ -101,8 +119,8 @@ class Mapping(object):
         Returns an ordered map of the mapped attributes for the given mapped
         class and attribute key.
 
-        :param key: tuple of attribute names specifying a path to a nested
-          attribute in a resource tree. If this is not given, the attributes
+        :param key: Tuple of attribute names specifying a path to a nested
+          attribute in a resource tree. If this is not given, all attributes
           in this mapping will be returned.
         """
         if mapped_class is None:
@@ -114,7 +132,8 @@ class Mapping(object):
     def get_attribute(self, attribute_name, mapped_class=None, key=None):
         """
         Returns the specified attribute from the map of all mapped attributes
-        for the given mapped class and attribute key.
+        for the given mapped class and attribute key.  See
+        :method:`get_attribute_map` for details.
         """
         return self.__get_attribute_map(mapped_class, key)[attribute_name]
 
